@@ -11,6 +11,7 @@ import curses
 import certifi
 import urllib3
 import tools
+import subprocess
 
 # GLOBALS
 mbTiles = object
@@ -162,8 +163,10 @@ def key_parse(stdscr):
       n = numTiles(state['zoom'])
       ch = stdscr.getch()
       if ch == ord('q'):
+         proc = subprocess.Popen(['killall','display'])
+         proc.communicate()
          break  # Exit the while()
-      if ch == curses.KEY_DOWN:
+      if ch == curses.KEY_UP:
          if not state['tileY'] == 0:
             state['tileY'] -= 1
       elif ch == curses.KEY_RIGHT:
@@ -172,18 +175,25 @@ def key_parse(stdscr):
       elif ch == curses.KEY_LEFT:
          if not state['tileX'] == 0:
             state['tileX'] -= 1
-      elif ch == curses.KEY_UP:
+      elif ch == curses.KEY_DOWN:
          if not state['tileY'] == n-1:
             state['tileY'] += 1
       elif ch == ord('='):
          if not state['zoom'] == 7:
+            state['tileX'] *= 2
+            state['tileY'] *= 2
             state['zoom'] += 1
       elif ch == ord('-'):
          if not state['zoom'] == 1:
+            state['tileX'] /= 2
+            state['tileY'] /= 2
             state['zoom'] -= 1
-      #print('zoom:%s lon:%s lat:%s'%(['zoom'],state['tileX'],state['tileY']))
-      
+      stdscr.clear()
+      stdscr.addstr(0,0,'zoom:%s lon:%s lat:%s'%(state['zoom'],state['tileX'],state['tileY']))
+      stdscr.refresh() 
       raw = mbTiles.GetTile(state['zoom'],state['tileX'],state['tileY'])
+      proc = subprocess.Popen(['killall','display'])
+      proc.communicate()
       image = Image.open(StringIO.StringIO(raw))
       image.show()
 
