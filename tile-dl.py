@@ -5,17 +5,27 @@
 import sqlite3
 import sys, os
 import argparse
-from PIL import Image
 import StringIO
-import curses
 import certifi
 import urllib3
 import tools
 import subprocess
+import math
 
 # GLOBALS
 mbTiles = object
 args = object
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Download WMTS tiles arount a point.")
+    parser.add_argument('-z',"--zoom", help="zoom level. (Default=8)", type=int,default=2)
+    parser.add_argument("-m", "--mbtiles", help="mbtiles filename.")
+    parser.add_argument("--lat", help="Latitude degrees.",type=float)
+    parser.add_argument("--lon", help="Longitude degrees.",type=float)
+    parser.add_argument("-d","--dir", help='Output to this directory (use "." for ./output/)')
+    parser.add_argument("-g", "--get", help='get WMTS tiles from this URL(Default: Sentinel Cloudless).')
+    parser.add_argument("-s", "--summarize", help="Data about each zoom level.",action="store_true")
+    return parser.parse_args()
 
 class MBTiles(object):
    def __init__(self, filename):
@@ -146,18 +156,12 @@ def to_dir():
             with open(this_path,'w') as fp:
                fp.write(raw)
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Display mbtile image.")
-    parser.add_argument('-z',"--zoom", help="zoom level. (Default=2)", type=int,default=2)
-    parser.add_argument("-x",  help="tileX", type=int, default=1)
-    parser.add_argument("-y",  help="tileY", type=int, default=2)
-    parser.add_argument("-m", "--mbtiles", help="mbtiles filename.")
-    parser.add_argument("-s", "--summarize", help="Data about each zoom level.",action="store_true")
-    parser.add_argument("--lat", help="Latitude degrees.",type=float)
-    parser.add_argument("--lon", help="Longitude degrees.",type=float)
-    parser.add_argument("-d","--dir", help='Output to this directory (use "." for ./output/)')
-    parser.add_argument("-g", "--get", help='get WMTS tiles from this URL(of "." for Sentinel Cloudless).')
-    return parser.parse_args()
+def coordinates2WmtsTilesNumbers(lat_deg, lon_deg, zoom):
+  lat_rad = math.radians(lat_deg)
+  n = 2.0 ** zoom
+  xtile = int((lon_deg + 180.0) / 360.0 * n)
+  ytile = int((1.0 - math.log(math.tan(lat_rad) + (1 / math.cos(lat_rad))) / math.pi) / 2.0 * n)
+  return (xtile, ytile)
 
 def numTiles(z):
   return(pow(2,z))
@@ -174,122 +178,45 @@ def get_tile(zoom,tilex,tiley):
       print (err)
    return(data)
 
-def key_parse(stdscr):
-   global args
-   global mbTiles
-   state = {'tileX':2,'tileY':1,'zoom':2}
-   while 1:
-      n = numTiles(state['zoom'])
-      ch = stdscr.getch()
-      if ch == ord('q'):
-         proc = subprocess.Popen(['killall','display'])
-         proc.communicate()
-         break  # Exit the while()
-      if ch == curses.KEY_UP:
-         if not state['tileY'] == 0:
-            state['tileY'] -= 1
-      elif ch == curses.KEY_RIGHT:
-         if not state['tileX'] == n-1:
-            state['tileX'] += 1
-      elif ch == curses.KEY_LEFT:
-         if not state['tileX'] == 0:
-            state['tileX'] -= 1
-      elif ch == curses.KEY_DOWN:
-         if not state['tileY'] == n-1:
-            state['tileY'] += 1
-      elif ch == ord('='):
-         if not state['zoom'] == 7:
-            state['tileX'] *= 2
-            state['tileY'] *= 2
-            state['zoom'] += 1
-      elif ch == ord('-'):
-         if not state['zoom'] == 1:
-            state['tileX'] /= 2
-            state['tileY'] /= 2
-            state['zoom'] -= 1
-      stdscr.clear()
-      stdscr.addstr(0,0,'zoom:%s lon:%s lat:%s'%(state['zoom'],state['tileX'],state['tileY']))
-      stdscr.refresh() 
-      raw = mbTiles.GetTile(state['zoom'],state['tileX'],state['tileY'])
-      proc = subprocess.Popen(['killall','display'])
-      proc.communicate()
-      image = Image.open(StringIO.StringIO(raw))
-      image.show()
-
-
-def wrapper(func, *args, **kwds):
-    """Wrapper function that initializes curses and calls another function,
-    restoring normal keyboard/screen behavior on error.
-    The callable object 'func' is then passed the main window 'stdscr'
-    as its first argument, followed by any other arguments passed to
-    wrapper().
-    """
-
-    try:
-        # Initialize curses
-        stdscr = curses.initscr()
-
-        # Turn off echoing of keys, and enter cbreak mode,
-        # where no buffering is performed on keyboard input
-        curses.noecho()
-        curses.cbreak()
-
-        # In keypad mode, escape sequences for special keys
-        # (like the cursor keys) will be interpreted and
-        # a special value like curses.KEY_LEFT will be returned
-        stdscr.keypad(1)
-
-        # Start color, too.  Harmless if the terminal doesn't have
-        # color; user can test with has_color() later on.  The try/catch
-        # works around a minor bit of over-conscientiousness in the curses
-        # module -- the error return from C start_color() is ignorable.
-        try:
-            curses.start_color()
-        except:
-            pass
-
-        return func(stdscr, *args, **kwds)
-    finally:
-        # Set everything back to normal
-        if 'stdscr' in locals():
-            stdscr.keypad(0)
-            curses.echo()
-            curses.nocbreak()
-            curses.endwin() 
-
 def main():
    global args
    global mbTiles
    args = parse_args()
-   if not args.mbtiles:
-      args.mbtiles = 'satellite.mbtiles'
-   mbTiles  = MBTiles(args.mbtiles)
+   if not args.mbtiles and not args.dir:
+      print("You must specify Target -- either mbtiles or Directory")
+      sys.exit(0)
    if args.summarize:
       mbTiles.summarize()
       sys.exit(0)
-   print('mbtiles filename:%s'%args.mbtiles)
-   if args.lon and args.lat:
-      if not args.zoom:
-         args.zoom = 2
+   if args.mbtiles and not args.mbtiles.endswith('.mbtiles'):
+         args.mbtiles += ".mbtiles"
+   if args.dir and args.dir != "":
+      if args.dir == ".":
+         args.dir = './output'
+      if not os.path.isdir(args.dir):
+         os.makedirs(args.dir)
+   if args.lon == 0.0 and args.lat == 0.0:
+      args.lon = -122.14 
+      args.lat = 37.46
+   if not args.zoom:
+      args.zoom = 8
+   
       print('inputs to tileXY: lat:%s lon:%s zoom:%s'%(args.lat,args.lon,args.zoom))
       args.x,args.y = tools.tileXY(args.lat,args.lon,args.zoom)
    if  args.get != None:
       print('get specified')
-      set_url()
-   if args.dir != None:
-      to_dir()
-      sys.exit(0)
-      
-   """
+      url = args.get
+   else:
+      url =  "https://tiles.maps.eox.at/wmts?layer=s2cloudless-2018_3857&style=default&tilematrixset=g&Service=WMTS&Request=GetTile&Version=1.0.0&Format=image%2Fjpeg&TileMatrix={z}&TileCol={x}&TileRow={y}"
    # Open a WMTS source
-   src = WMTS("https://tiles.maps.eox.at/wmts?layer=s2cloudless-2018_3857&style=default&tilematrixset=g&Service=WMTS&Request=GetTile&Version=1.0.0&Format=image%2Fjpeg&TileMatrix={z}&TileCol={x}&TileRow={y}")
-   r = src.get(4,2,3)
+   src = WMTS(url)
+   try:
+      r = src.get(4,2,3)
+   except exception as e:
+      print(str(e))
+      sys.exit(1)
    print(r.status)
 
-   
-   """
-   wrapper(key_parse) 
-   
 
 if __name__ == "__main__":
     # Run the main routine
