@@ -280,7 +280,7 @@ def sat_bbox(lat_deg,lon_deg,zoom,radius):
    magic_number = int(lat_deg * lon_deg * radius)
    bboxes = work_dir + "/bboxes.geojson"
    with open(bboxes,"r") as bounding_geojson:
-      data = json.load(bounding_geojson)
+      data = geojson.load(bounding_geojson)
       #feature_collection = FeatureCollection(data['features'])
       magic_number_found = False
       for feature in data['features']:
@@ -295,7 +295,8 @@ def sat_bbox(lat_deg,lon_deg,zoom,radius):
    east=float(east)
    north=float(north)
    poly = Polygon([[[west,south],[east,south],[east,north],[west,north],[west,south]]])
-   data['features'].append(Feature(geometry=poly,properties={"name":'satellite',\
+   if not magic_number_found:
+      data['features'].append(Feature(geometry=poly,properties={"name":'satellite',\
                            "magic_number":magic_number}))
 
    collection = FeatureCollection(data['features'])
