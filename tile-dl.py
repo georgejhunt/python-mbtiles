@@ -1,4 +1,6 @@
 #!/usr/bin/env python2
+# -*- coding: UTF-8 -*-
+
 # read mbtiles images to viewer
 # started from https://github.com/TimSC/pyMbTiles/blob/master/MBTiles.py
 
@@ -15,6 +17,11 @@ import math
 # GLOBALS
 mbTiles = object
 args = object
+earth_circum = 40075.0 # in km
+
+ATTRIBUTION = os.environ.get('METADATA_ATTRIBUTION', '<a href="http://openmaptiles.org/" target="_blank">&copy; OpenMapTiles</a> <a href="http://www.openstreetmap.org/about/" target="_blank">&copy; OpenStreetMap contributors</a>')
+VERSION = os.environ.get('METADATA_VERSION', '3.3')
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Download WMTS tiles arount a point.")
@@ -99,10 +106,10 @@ class MBTiles(object):
          self.CheckSchema()
 
       self.c.execute("UPDATE tiles SET tile_data=? WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?", 
-         (data, zoomLevel, tileColumn, tileRow))
+         (sqlite3.Binary(data), zoomLevel, tileColumn, tileRow))
       if self.c.rowcount == 0:
          self.c.execute("INSERT INTO tiles (zoom_level, tile_column, tile_row, tile_data) VALUES (?, ?, ?, ?);", 
-            (zoomLevel, tileColumn, tileRow, data))
+            (zoomLevel, tileColumn, tileRow, sqlite3.Binary(data)))
 
    def DeleteTile(self, zoomLevel, tileColumn, tileRow):
       if not self.schemaReady:
@@ -140,6 +147,75 @@ class WMTS(object):
       #print(url)
       return(self.http.request("GET",url))
       
+class Extract(object):
+
+    def __init__(self, extract, country, city, top, left, bottom, right,
+                 min_zoom=0, max_zoom=14, center_zoom=10):
+        self.extract = extract
+        self.country = country
+        self.city = city
+
+        self.min_lon = left
+        self.min_lat = bottom
+        self.max_lon = right
+        self.max_lat = top
+
+        self.min_zoom = min_zoom
+        self.max_zoom = max_zoom
+        self.center_zoom = center_zoom
+
+    def bounds(self):
+        return '{},{},{},{}'.format(self.min_lon, self.min_lat,
+                                    self.max_lon, self.max_lat)
+
+    def center(self):
+        center_lon = (self.min_lon + self.max_lon) / 2.0
+        center_lat = (self.min_lat + self.max_lat) / 2.0
+        return '{},{},{}'.format(center_lon, center_lat, self.center_zoom)
+
+    def metadata(self, extract_file):
+        return {
+            "type": os.environ.get('METADATA_TYPE', 'baselayer'),
+            "attribution": ATTRIBUTION,
+            "version": VERSION,
+            "minzoom": self.min_zoom,
+            "maxzoom": self.max_zoom,
+            "name": os.environ.get('METADATA_NAME', 'OpenMapTiles'),
+            "id": os.environ.get('METADATA_ID', 'openmaptiles'),
+            "description": os.environ.get('METADATA_DESC', "Extract from http://openmaptiles.org"),
+            "bounds": self.bounds(),
+            "center": self.center(),
+            "basename": os.path.basename(extract_file),
+            "filesize": os.path.getsize(extract_file)
+        }
+
+def human_readable(num):
+    # return 3 significant digits and unit specifier
+    num = float(num)
+    units = [ '','K','M','G']
+    for i in range(4):
+        if num<10.0:
+            return "%.2f%s"%(num,units[i])
+        if num<100.0:
+            return "%.1f%s"%(num,units[i])
+        if num < 1000.0:
+            return "%.0f%s"%(num,units[i])
+        num /= 1000.0
+
+def bounds(lat_deg,lon_deg,radius_km,zoom=13):
+  n = 2.0 ** zoom
+  tile_kmeters = earth_circum / n
+  #print('tile dim(km):%s'%tile_kmeters)
+  per_pixel = tile_kmeters / 256 * 1000
+  #print('%s meters per pixel'%per_pixel)
+  tileX,tileY = coordinates2WmtsTilesNumbers(lat_deg,lon_deg,zoom)
+  tile_radius = radius_km / tile_kmeters
+  minX = int(tileX - tile_radius) 
+  maxX = int(tileX + tile_radius + 1) 
+  minY = int(tileY - tile_radius) 
+  maxY = int(tileY + tile_radius + 1) 
+  return (minX,maxX,minY,maxY)
+
 def to_dir():
    if args.dir != ".":
       prefix = os.path.join(args.dir,'output')
@@ -156,12 +232,37 @@ def to_dir():
             with open(this_path,'w') as fp:
                fp.write(raw)
 
+
 def coordinates2WmtsTilesNumbers(lat_deg, lon_deg, zoom):
   lat_rad = math.radians(lat_deg)
   n = 2.0 ** zoom
   xtile = int((lon_deg + 180.0) / 360.0 * n)
   ytile = int((1.0 - math.log(math.tan(lat_rad) + (1 / math.cos(lat_rad))) / math.pi) / 2.0 * n)
   return (xtile, ytile)
+
+def download_tiles(src,lat_deg,lon_deg,zoom,radius):
+   global mbTiles
+   tileX_min,tileX_max,tileY_min,tileY_max = bounds(lat_deg,lon_deg,radius,zoom)
+   for tileX in range(tileX_min,tileX_max+1):
+      for tileY in range(tileY_min,tileY_max+1):
+         print('tileX:%s tileY:%s'%(tileX,tileY))
+         try:
+            r = src.get(zoom,tileX,tileY)
+         except exception as e:
+            print(str(e))
+            sys.exit(1)
+         if r.status == 200:
+            mbTiles.SetTile(zoom, tileX, tileY, r.data)
+         else:
+            print('status returned:%s'%r.status)
+
+def report(lat_deg,lon_deg,zoom,radius):
+   tileX_min,tileX_max,tileY_min,tileY_max = bounds(lat_deg,lon_deg,radius,zoom)
+   print('minX:%s maxX:%s minY:%s maxY:%s'%bounds(lat_deg,lon_deg,radius,zoom))
+   count = ((tileX_max-tileX_min) * (tileY_max-tileY_min))
+   print('Tile count:%s Size:%s'%(count,human_readable(count * 5000)))
+   print('Time to download: %s minutes'%(count/48))
+   #print('or: %s hours'%(count/2880))
 
 def numTiles(z):
   return(pow(2,z))
@@ -185,11 +286,14 @@ def main():
    if not args.mbtiles and not args.dir:
       print("You must specify Target -- either mbtiles or Directory")
       sys.exit(0)
+      sys.exit(0)
+   if args.mbtiles and not args.mbtiles.endswith('.mbtiles'):
+      args.mbtiles += ".mbtiles"
+   if args.mbtiles:
+      mbTiles =  MBTiles(args.mbtiles)
    if args.summarize:
       mbTiles.summarize()
       sys.exit(0)
-   if args.mbtiles and not args.mbtiles.endswith('.mbtiles'):
-         args.mbtiles += ".mbtiles"
    if args.dir and args.dir != "":
       if args.dir == ".":
          args.dir = './output'
@@ -210,12 +314,11 @@ def main():
       url =  "https://tiles.maps.eox.at/wmts?layer=s2cloudless-2018_3857&style=default&tilematrixset=g&Service=WMTS&Request=GetTile&Version=1.0.0&Format=image%2Fjpeg&TileMatrix={z}&TileCol={x}&TileRow={y}"
    # Open a WMTS source
    src = WMTS(url)
-   try:
-      r = src.get(4,2,3)
-   except exception as e:
-      print(str(e))
-      sys.exit(1)
-   print(r.status)
+   for zoom in range(13,1,-1):
+      print('zoom level:%s'%zoom)
+      download_tiles(src,37.46,-122.14,zoom,5)
+      mbTiles.Commit()
+   sys.exit(0)
 
 
 if __name__ == "__main__":

@@ -12,10 +12,12 @@ import certifi
 import urllib3
 import tools
 import subprocess
+import json
 
 # GLOBALS
 mbTiles = object
 args = object
+bounds = {}
 
 class MBTiles(object):
    def __init__(self, filename):
@@ -108,6 +110,20 @@ class MBTiles(object):
    def Commit(self):
       self.conn.commit()
 
+   def get_bounds(self):
+     global bounds
+     sql = 'select zoom_level, min(tile_column),max(tile_column),min(tile_row),max(tile_row), count(zoom_level) from tiles group by zoom_level;'
+     resp = self.c.execute(sql)
+     rows = resp.fetchall()
+     for row in rows:
+         bounds[row['zoom_level']] = { 'minX': row['min(tile_column)'],\
+                                  'maxX': row['max(tile_column)'],\
+                                  'minY': row['min(tile_row)'],\
+                                  'maxY': row['max(tile_row)'],\
+                                 }
+     outstr = json.dumps(bounds,indent=2)
+     print('bounds:%s'%outstr)
+
    def summarize(self):
      sql = 'select zoom_level, min(tile_column),max(tile_column),min(tile_row),max(tile_row), count(zoom_level) from tiles group by zoom_level;'
      rows = self.c.execute(sql)
@@ -177,8 +193,22 @@ def get_tile(zoom,tilex,tiley):
 def key_parse(stdscr):
    global args
    global mbTiles
-   state = {'tileX':2,'tileY':1,'zoom':2}
+   state = { 'zoom':2}
+   state['tileX'] = bounds[state['zoom']]['minX']
+   state['tileY'] = bounds[state['zoom']]['minY']
    while 1:
+      stdscr.clear()
+      stdscr.addstr(0,0,'zoom:%s lon:%s lat:%s'%(state['zoom'],state['tileX'],state['tileY']))
+      stdscr.refresh() 
+      try:
+         raw = mbTiles.GetTile(state['zoom'],state['tileX'],state['tileY'])
+         proc = subprocess.Popen(['killall','display'])
+         proc.communicate()
+         image = Image.open(StringIO.StringIO(raw))
+         image.show()
+      except:  
+         print('Tile not found. x:%s y:%s'%(state['tileX'],state['tileY']))
+
       n = numTiles(state['zoom'])
       ch = stdscr.getch()
       if ch == ord('q'):
@@ -186,19 +216,19 @@ def key_parse(stdscr):
          proc.communicate()
          break  # Exit the while()
       if ch == curses.KEY_UP:
-         if not state['tileY'] == 0:
+         if not state['tileY'] == bounds[state['zoom']]['minY']:
             state['tileY'] -= 1
       elif ch == curses.KEY_RIGHT:
-         if not state['tileX'] == n-1:
+         if not state['tileX'] == bounds[state['zoom']]['maxX']-1:
             state['tileX'] += 1
       elif ch == curses.KEY_LEFT:
-         if not state['tileX'] == 0:
+         if not state['tileX'] == bounds[state['zoom']]['minX']:
             state['tileX'] -= 1
       elif ch == curses.KEY_DOWN:
-         if not state['tileY'] == n-1:
+         if not state['tileY'] == bounds[state['zoom']]['minY']-1:
             state['tileY'] += 1
       elif ch == ord('='):
-         if not state['zoom'] == 7:
+         if not state['zoom'] == 13:
             state['tileX'] *= 2
             state['tileY'] *= 2
             state['zoom'] += 1
@@ -207,14 +237,6 @@ def key_parse(stdscr):
             state['tileX'] /= 2
             state['tileY'] /= 2
             state['zoom'] -= 1
-      stdscr.clear()
-      stdscr.addstr(0,0,'zoom:%s lon:%s lat:%s'%(state['zoom'],state['tileX'],state['tileY']))
-      stdscr.refresh() 
-      raw = mbTiles.GetTile(state['zoom'],state['tileX'],state['tileY'])
-      proc = subprocess.Popen(['killall','display'])
-      proc.communicate()
-      image = Image.open(StringIO.StringIO(raw))
-      image.show()
 
 
 def wrapper(func, *args, **kwds):
@@ -280,14 +302,7 @@ def main():
       to_dir()
       sys.exit(0)
       
-   """
-   # Open a WMTS source
-   src = WMTS("https://tiles.maps.eox.at/wmts?layer=s2cloudless-2018_3857&style=default&tilematrixset=g&Service=WMTS&Request=GetTile&Version=1.0.0&Format=image%2Fjpeg&TileMatrix={z}&TileCol={x}&TileRow={y}")
-   r = src.get(4,2,3)
-   print(r.status)
-
-   
-   """
+   mbTiles.get_bounds()
    wrapper(key_parse) 
    
 
