@@ -277,8 +277,17 @@ def report(lat_deg,lon_deg,zoom,radius):
    #print('or: %s hours'%(count/2880))
 
 def sat_bbox(lat_deg,lon_deg,zoom,radius):
-   features = [] 
    magic_number = int(lat_deg * lon_deg * radius)
+   bboxes = work_dir + "/bboxes.geojson"
+   with open(bboxes,"r") as bounding_geojson:
+      data = json.load(bounding_geojson)
+      #feature_collection = FeatureCollection(data['features'])
+      magic_number_found = False
+      for feature in data['features']:
+         if feature['properties']['magic_number'] == magic_number:
+            magic_number_found = True
+
+   features = [] 
    (west, south, east, north) = get_degree_extent(lat_deg,lon_deg,radius,zoom)
    print('west:%s, south:%s, east:%s, north:%s'%(west, south, east, north))
    west=float(west)
@@ -286,10 +295,10 @@ def sat_bbox(lat_deg,lon_deg,zoom,radius):
    east=float(east)
    north=float(north)
    poly = Polygon([[[west,south],[east,south],[east,north],[west,north],[west,south]]])
-   features.append(Feature(geometry=poly,properties={"name":'satellite',\
+   data['features'].append(Feature(geometry=poly,properties={"name":'satellite',\
                            "magic_number":magic_number}))
 
-   collection = FeatureCollection(features)
+   collection = FeatureCollection(data['features'])
    bboxes = work_dir + "/bboxes.geojson"
    with open(bboxes,"w") as bounding_geojson:
       outstr = geojson.dumps(collection, indent=2)
