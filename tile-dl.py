@@ -7,12 +7,12 @@
 import sqlite3
 import sys, os
 import argparse
-import StringIO
 import certifi
 import urllib3
 import tools
-import subprocess
 import math
+from geojson import Feature, Point, FeatureCollection, Polygon
+import geojson
 
 # GLOBALS
 mbTiles = object
@@ -22,6 +22,7 @@ earth_circum = 40075.0 # in km
 ATTRIBUTION = os.environ.get('METADATA_ATTRIBUTION', '<a href="http://openmaptiles.org/" target="_blank">&copy; OpenMapTiles</a> <a href="http://www.openstreetmap.org/about/" target="_blank">&copy; OpenStreetMap contributors</a>')
 VERSION = os.environ.get('METADATA_VERSION', '3.3')
 
+work_dir = '.'
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Download WMTS tiles arount a point.")
@@ -29,6 +30,7 @@ def parse_args():
     parser.add_argument("-m", "--mbtiles", help="mbtiles filename.")
     parser.add_argument("--lat", help="Latitude degrees.",type=float)
     parser.add_argument("--lon", help="Longitude degrees.",type=float)
+    parser.add_argument("-r","--radius", help="Download within this radius(km).",type=float)
     parser.add_argument("-d","--dir", help='Output to this directory (use "." for ./output/)')
     parser.add_argument("-g", "--get", help='get WMTS tiles from this URL(Default: Sentinel Cloudless).')
     parser.add_argument("-s", "--summarize", help="Data about each zoom level.",action="store_true")
@@ -203,19 +205,29 @@ def human_readable(num):
         num /= 1000.0
 
 def bounds(lat_deg,lon_deg,radius_km,zoom=13):
-  n = 2.0 ** zoom
-  tile_kmeters = earth_circum / n
-  #print('tile dim(km):%s'%tile_kmeters)
-  per_pixel = tile_kmeters / 256 * 1000
-  #print('%s meters per pixel'%per_pixel)
-  tileX,tileY = coordinates2WmtsTilesNumbers(lat_deg,lon_deg,zoom)
-  tile_radius = radius_km / tile_kmeters
-  minX = int(tileX - tile_radius) 
-  maxX = int(tileX + tile_radius + 1) 
-  minY = int(tileY - tile_radius) 
-  maxY = int(tileY + tile_radius + 1) 
-  return (minX,maxX,minY,maxY)
+   n = 2.0 ** zoom
+   tile_kmeters = earth_circum / n
+   #print('tile dim(km):%s'%tile_kmeters)
+   per_pixel = tile_kmeters / 256 * 1000
+   #print('%s meters per pixel'%per_pixel)
+   tileX,tileY = coordinates2WmtsTilesNumbers(lat_deg,lon_deg,zoom)
+   tile_radius = radius_km / tile_kmeters
+   minX = int(tileX - tile_radius) 
+   maxX = int(tileX + tile_radius + 1) 
+   minY = int(tileY - tile_radius) 
+   maxY = int(tileY + tile_radius + 1) 
+   return (minX,maxX,minY,maxY)
 
+def get_degree_extent(lat_deg,lon_deg,radius_km,zoom=13):
+   (minX,maxX,minY,maxY) = bounds(lat_deg,lon_deg,radius_km,zoom)
+   print('minX:%s,maxX:%s,minY:%s,maxY:%s'%(minX,maxX,minY,maxY))
+   # following function retures (y,x)
+   north_west_point = tools.xy2latlon(minX,minY,zoom)
+   south_east_point = tools.xy2latlon(maxX+1,maxY+1,zoom)
+   print('north_west:%s south_east:%s'%(north_west_point, south_east_point))
+   # returns (west, south, east, north)
+   return (north_west_point[1],south_east_point[0],south_east_point[1],north_west_point[0])
+  
 def to_dir():
    if args.dir != ".":
       prefix = os.path.join(args.dir,'output')
@@ -264,6 +276,25 @@ def report(lat_deg,lon_deg,zoom,radius):
    print('Time to download: %s minutes'%(count/48))
    #print('or: %s hours'%(count/2880))
 
+def sat_bbox(lat_deg,lon_deg,zoom,radius):
+   features = [] 
+   magic_number = int(lat_deg * lon_deg * radius)
+   (west, south, east, north) = get_degree_extent(lat_deg,lon_deg,radius,zoom)
+   print('west:%s, south:%s, east:%s, north:%s'%(west, south, east, north))
+   west=float(west)
+   south=float(south)
+   east=float(east)
+   north=float(north)
+   poly = Polygon([[[west,south],[east,south],[east,north],[west,north],[west,south]]])
+   features.append(Feature(geometry=poly,properties={"name":'satellite',\
+                           "magic_number":magic_number}))
+
+   collection = FeatureCollection(features)
+   bboxes = work_dir + "/bboxes.geojson"
+   with open(bboxes,"w") as bounding_geojson:
+      outstr = geojson.dumps(collection, indent=2)
+      bounding_geojson.write(outstr)
+
 def numTiles(z):
   return(pow(2,z))
 
@@ -304,6 +335,8 @@ def main():
       args.lat = 37.46
    if not args.zoom:
       args.zoom = 8
+   if not args.radius:
+      args.radius = 5
    
       print('inputs to tileXY: lat:%s lon:%s zoom:%s'%(args.lat,args.lon,args.zoom))
       args.x,args.y = tools.tileXY(args.lat,args.lon,args.zoom)
@@ -312,6 +345,9 @@ def main():
       url = args.get
    else:
       url =  "https://tiles.maps.eox.at/wmts?layer=s2cloudless-2018_3857&style=default&tilematrixset=g&Service=WMTS&Request=GetTile&Version=1.0.0&Format=image%2Fjpeg&TileMatrix={z}&TileCol={x}&TileRow={y}"
+   report(args.lat,args.lon,13,args.radius)
+   sat_bbox(args.lat,args.lon,13,args.radius)
+   sys.exit(0)
    # Open a WMTS source
    src = WMTS(url)
    for zoom in range(13,1,-1):
