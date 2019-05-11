@@ -22,7 +22,7 @@ earth_circum = 40075.0 # in km
 ATTRIBUTION = os.environ.get('METADATA_ATTRIBUTION', '<a href="http://openmaptiles.org/" target="_blank">&copy; OpenMapTiles</a> <a href="http://www.openstreetmap.org/about/" target="_blank">&copy; OpenStreetMap contributors</a>')
 VERSION = os.environ.get('METADATA_VERSION', '3.3')
 
-work_dir = '.'
+work_dir = '/library/www/osm-vector/maplist/assets'
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Download WMTS tiles arount a point.")
@@ -284,7 +284,7 @@ def sat_bbox(lat_deg,lon_deg,zoom,radius):
       #feature_collection = FeatureCollection(data['features'])
       magic_number_found = False
       for feature in data['features']:
-         if feature['properties']['magic_number'] == magic_number:
+         if feature['properties'].get('magic_number') == magic_number:
             magic_number_found = True
 
    features = [] 
