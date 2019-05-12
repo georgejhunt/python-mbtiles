@@ -8,8 +8,10 @@ from flask import Flask,request,g
 import sqlite3
 import json
 import math
+from flask_cors import CORS
 
 application = Flask(__name__)
+cors = CORS(application)
 DATABASE = './detail.mbtiles'
 bounds = {}
 
@@ -54,7 +56,7 @@ def exists():
        sql = 'select * from tiles where zoom_level = %s and tile_column = %s and tile_row = %s'%(zoom,tileX,tileY,)
        cur.execute(sql)
        rv = cur.fetchone()
-       outstr = sql + '<br>'
+       outstr = ''
        outstr += '{"success":'
        if rv:
           outstr += '"true"}'
@@ -67,7 +69,8 @@ def exists():
                  latrequest <= bounds['ymax'] :
               outstr += '"true"'
           else:
-              outstr += '"false"}'
+              outstr += 'false}'
+       print outstr
        return outstr
     else:
       return "Mbtiles metadata for bounds is missing -> limits to zoom 14"
