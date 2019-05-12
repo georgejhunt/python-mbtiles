@@ -44,28 +44,45 @@ if (isset($_GET['summary'])){
 $zoom = $_GET['zoom'];
 $lon = $_GET['lon'];
 $lat = $_GET['lat'];
-echo "$lat  $lon $zoom\n";
+//echo "$lat  $lon $zoom\n";
 $latlon = deg2num($lat, $lon, $zoom);
-$lon = $latlon[0];
-$lat = $latlon[1];
-$lat = (2 ** $zoom) - $lat - 1;
-echo "x:$lon y:$lat\n";
+$tileX = $latlon[0];
+$tileY = $latlon[1];
+$tileY = (2 ** $zoom) - $tileY - 1;
+//echo "x:$lon y:$lat\n";
   try
   {
     // Open the database
-    $conn = new PDO("sqlite:$db");
+   $conn = new SQLite3($db);
     // Query the tiles view and echo out the returned image
    $sql = "SELECT * FROM tiles WHERE zoom_level = $zoom AND tile_column = $lon AND tile_row = $lat";
-   $q = $conn->prepare($sql);
-   $q->execute();
-   $row = $q->fetch(PDO::FETCH_ASSOC);
+   $result= $conn->query($sql);
+   $row = $result->fetchArray(SQLITE3_ASSOC);
 
    if ( $row) {
          header("Content-Type: application/json");
          echo '{"success": "true"}';
-      } else {
-         header("Content-Type: application/json");
-         echo '{"success": "false"}';
+      } else if ($zoom > 14 ) {
+         // zoom > 14 does not exist, but should be permitted
+         $sql = 'select value from metadata where name = ?';
+         $q = $conn->prepare($sql);
+         if( $q ) {
+            $q->bindValue(1,'bounds');
+            $result = $q->execute();
+            $row = $result->fetchArray(SQLITE3_ASSOC);
+            $wsen = explode(',', $row['value']);
+            header("Content-Type: application/json");
+            //echo print_r($wsen,TRUE);
+            //echo "lon:$lon lat:$lat"; 
+            if ($zoom > 14 &&
+                 $lon>= $wsen[0] &&
+                 $lon<= $wsen[2] &&
+                 $lat>= $wsen[1] &&
+                 $lat<= $wsen[3] ){
+                 $result = '{"success": "true"}';
+            } else $result = '{"success": "false"}';
+            echo $result;
+         } else echo "FAilure to get bounds from metadata $sql";
       }
   }
   catch(PDOException $e)
