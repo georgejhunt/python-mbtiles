@@ -41,15 +41,21 @@ if (isset($_GET['summary'])){
    summary();
    exit(1);
 }
-$zoom = $_GET['z'];
-$column = $_GET['x'];
-$row = $_GET['y'];
+$zoom = $_GET['zoom'];
+$lon = $_GET['lon'];
+$lat = $_GET['lat'];
+echo "$lat  $lon $zoom\n";
+$latlon = deg2num($lat, $lon, $zoom);
+$lon = $latlon[0];
+$lat = $latlon[1];
+$lat = (2 ** $zoom) - $lat - 1;
+echo "x:$lon y:$lat\n";
   try
   {
     // Open the database
     $conn = new PDO("sqlite:$db");
     // Query the tiles view and echo out the returned image
-   $sql = "SELECT * FROM tiles WHERE zoom_level = $zoom AND tile_column = $column AND tile_row = $row";
+   $sql = "SELECT * FROM tiles WHERE zoom_level = $zoom AND tile_column = $lon AND tile_row = $lat";
    $q = $conn->prepare($sql);
    $q->execute();
    $row = $q->fetch(PDO::FETCH_ASSOC);
