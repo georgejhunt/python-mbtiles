@@ -55,7 +55,7 @@ $tileY = (2 ** $zoom) - $tileY - 1;
     // Open the database
    $conn = new SQLite3($db);
     // Query the tiles view and echo out the returned image
-   $sql = "SELECT * FROM tiles WHERE zoom_level = $zoom AND tile_column = $lon AND tile_row = $lat";
+   $sql = "SELECT * FROM tiles WHERE zoom_level = $zoom AND tile_column = $tileX AND tile_row = $tileY";
    $result= $conn->query($sql);
    $row = $result->fetchArray(SQLITE3_ASSOC);
 
