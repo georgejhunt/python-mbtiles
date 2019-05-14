@@ -1,6 +1,7 @@
 #!/usr/bin/env python2
 # Download satellite imagess from Sentinel Cloudless
-# started from https://github.com/TimSC/pyMbTiles/blob/master/MBTiles.py
+
+# help from https://github.com/TimSC/pyMbTiles/blob/master/MBTiles.py
 
 import sqlite3
 import sys, os
@@ -14,6 +15,8 @@ import tools
 import subprocess
 import json
 import math
+import uuid
+import shutil
 
 # Download source of satellite imagry
 url =  "https://tiles.maps.eox.at/wmts?layer=s2cloudless-2018_3857&style=default&tilematrixset=g&Service=WMTS&Request=GetTile&Version=1.0.0&Format=image%2Fjpeg&TileMatrix={z}&TileCol={x}&TileRow={y}"
@@ -60,14 +63,14 @@ class MBTiles(object):
       return row[0]
 
    def CheckSchema(self):     
-      sql = "CREATE TABLE IF NOT EXISTS metadata (name text, value text)"
+      sql = 'CREATE TABLE IF NOT EXISTS map (zoom_level INTEGER,tile_column INTEGER,tile_row INTEGER,tile_id TEXT,grid_id TEXT)'
       self.c.execute(sql)
 
-      sql = "CREATE TABLE IF NOT EXISTS tiles (zoom_level integer, tile_column integer, tile_row integer, tile_data blob)"
+      sql = 'CREATE TABLE IF NOT EXISTS images (tile_data blob,tile_id text)'
       self.c.execute(sql)
 
-      #sql = "CREATE INDEX IF NOT EXISTS tiles_index ON tiles (zoom_level, tile_column, tile_row)"
-      #self.c.execute(sql)
+      sql = 'CREATE VIEW tiles AS SELECT map.zoom_level AS zoom_level, map.tile_column AS tile_column, map.tile_row AS tile_row, images.tile_data AS tile_data FROM map JOIN images ON images.tile_id = map.tile_id'
+      self.c.execute(sql)
 
       self.schemaReady = True
 
@@ -101,37 +104,49 @@ class MBTiles(object):
       if not self.schemaReady:
          self.CheckSchema()
 
-      self.c.execute("UPDATE tiles SET tile_data=? WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?", 
-         (data, zoomLevel, tileColumn, tileRow))
-      if self.c.rowcount == 0:
-         self.c.execute("INSERT INTO tiles (zoom_level, tile_column, tile_row, tile_data) VALUES (?, ?, ?, ?);", 
-            (zoomLevel, tileColumn, tileRow, data))
+      tile_id = self.TileExists(zoomLevel, tileColumn, tileRow)
+      if tile_id: 
+         self.c.execute("UPDATE images SET tile_data=? WHERE tile_id = ?;", (data, tilee_id))
+      else: # this is not an update
+         tile_id = uuid.uuid().hex
+         self.c.execute("INSERT INTO images ( tile_data,tile_id) VALUES ( ?, ?);", (data,tile_id))
+         self.c.execute("INSERT INTO map (zoom_level, tile_column, tile_row, tile_id) VALUES (?, ?, ?, ?);", 
+            (zoomLevel, tileColumn, tileRow, tile_id))
 
    def DeleteTile(self, zoomLevel, tileColumn, tileRow):
       if not self.schemaReady:
          self.CheckSchema()
 
-      self.c.execute("DELETE FROM tiles WHERE zoom_level = ? AND tile_column = ? AND tile_row = ?", 
-         (data, zoomLevel, tileColumn, tileRow))
+      tile_id = self.TileExists(zoomLevel, tileColumn, tileRow)
+      if not tile_id:
+         raise RuntimeError("Tile not found")
+
+      self.c.execute("DELETE FROM images WHERE tile_id = ?;",tile_id) 
+      self.c.execute("DELETE FROM map WHERE tile_id = ?;",tile_id) 
       self.conn.commit()
 
+   def TileExists(self, zoomLevel, tileColumn, tileRow):
+      if not self.schemaReady:
+         self.CheckSchema()
+
+      sql = 'select tile_id from map where zoom_level = ? and tile_column = ? and tile_row = ?'
+      row = self.c.execute(sql,(zoomLevel, tileColumn, tileRow)
       if self.c.rowcount == 0:
-         raise RuntimeError("Tile not found")
+         return None
+      return row[0][0]
 
    def DownloadTile(self, zoomLevel, tileColumn, tileRow):
       # if the tile already exists, do nothing
-      try:
-         GetTile(zoomLevel, tileColumn, tileRow)
-         return
-      except:
-         pass
+      tile_id = self.TileExists(zoomLevel, tileColumn, tileRow)
+      if tile_id:
+         return 
       try:
          r = src.get(zoomLevel,tileColumn,tileRow)
       except Exception as e:
-         print(str(e))
-         sys.exit(1)
+         raise RuntimeError("Source data failure;%s"%e)
+         
       if r.status == 200:
-         mbTiles.SetTile(zoomLevel, tileColumn, tileRow, r.data)
+         self.SetTile(zoomLevel, tileColumn, tileRow, r.data)
       else:
          print('status returned:%s'%r.status)
 
@@ -319,10 +334,8 @@ def fetch_quad_for(tileX, tileY, zoom):
    mbTiles.DownloadTile(zoom+1,tileX*2+1,tileY*2+1)
    mbTiles.Commit()
   
-def region_tile_limits(region):
-   global src
-   #print region
-   cur_box = regions[region]
+def download_region(region):
+   global src # the opened url for satellite images
  
    # print some summary info for this region
    stdscr.addstr(1,0,"ZOOM")
@@ -331,6 +344,9 @@ def region_tile_limits(region):
    stdscr.addstr(1,20,'NEEDED')
    stdscr.addstr(1,30,'PERCENT')
    stdscr.addstr(1,50,"DAYS")
+
+   # 
+   cur_box = regions[region]
    for zoom in range(14):
       stdscr.addstr(zoom+2,0,str(zoom))
       xmin,xmax,ymin,ymax = bbox_tile_limits(cur_box['west'],cur_box['south'],\
@@ -343,9 +359,7 @@ def region_tile_limits(region):
               (bounds[zoom]['maxY']-bounds[zoom]['minY'])
       stdscr.addstr(zoom+2,10,str(tiles))
       
-   print str(bbox_limits)
    for zoom in range(bbox_zoom_start,13):
-     
       stdscr.addstr(zoom+2,0,str(zoom))
       tiles = (xmax-xmin)*(ymax-ymin)
       stdscr.addstr(zoom+2,20,str(tiles))
@@ -363,11 +377,13 @@ def region_tile_limits(region):
             raw = mbTiles.GetTile(zoom, xtile, ytile)
             if len(raw) > threshold:
                fetch_quad_for(xtile, ytile, zoom)
-            stdscr.addstr(zoom+2,60,"%d"%processed)
+            if processed % 10 == 0:
+               stdscr.addstr(zoom+2,60,"%d"%processed)
+
 
          break         
 
-def process(scr):
+def download(scr):
     global stdscr
     stdscr = scr
     k=0
@@ -385,7 +401,7 @@ def process(scr):
     while (k != ord('q')):
          #for region in regions.keys():
 
-         region_tile_limits('central_america')
+         download_region('central_america')
          # Refresh the screen
          stdscr.refresh()
 
@@ -422,7 +438,7 @@ def main():
       to_dir()
       sys.exit(0)
 
-   curses.wrapper(process) 
+   curses.wrapper(download) 
    
 
 if __name__ == "__main__":
