@@ -38,6 +38,7 @@ class MBTiles(object):
 
       self.conn = sqlite3.connect(filename)
       self.conn.row_factory = sqlite3.Row
+      self.conn.text_factory = str
       self.c = self.conn.cursor()
       self.schemaReady = False
 
@@ -69,7 +70,7 @@ class MBTiles(object):
       sql = 'CREATE TABLE IF NOT EXISTS images (tile_data blob,tile_id text)'
       self.c.execute(sql)
 
-      sql = 'CREATE VIEW tiles AS SELECT map.zoom_level AS zoom_level, map.tile_column AS tile_column, map.tile_row AS tile_row, images.tile_data AS tile_data FROM map JOIN images ON images.tile_id = map.tile_id'
+      sql = 'CREATE VIEW IF NOT EXISTS tiles AS SELECT map.zoom_level AS zoom_level, map.tile_column AS tile_column, map.tile_row AS tile_row, images.tile_data AS tile_data FROM map JOIN images ON images.tile_id = map.tile_id'
       self.c.execute(sql)
 
       self.schemaReady = True
@@ -108,8 +109,8 @@ class MBTiles(object):
       if tile_id: 
          self.c.execute("UPDATE images SET tile_data=? WHERE tile_id = ?;", (data, tilee_id))
       else: # this is not an update
-         tile_id = uuid.uuid().hex
-         self.c.execute("INSERT INTO images ( tile_data,tile_id) VALUES ( ?, ?);", (data,tile_id))
+         tile_id = uuid.uuid4().hex
+         self.c.execute("INSERT INTO images ( tile_data,tile_id) VALUES ( ?, ?);", (data,unicode(tile_id)))
          self.c.execute("INSERT INTO map (zoom_level, tile_column, tile_row, tile_id) VALUES (?, ?, ?, ?);", 
             (zoomLevel, tileColumn, tileRow, tile_id))
 
@@ -130,8 +131,9 @@ class MBTiles(object):
          self.CheckSchema()
 
       sql = 'select tile_id from map where zoom_level = ? and tile_column = ? and tile_row = ?'
-      row = self.c.execute(sql,(zoomLevel, tileColumn, tileRow)
-      if self.c.rowcount == 0:
+      self.c.execute(sql,(zoomLevel, tileColumn, tileRow))
+      row = self.c.fetchall()
+      if len(row) == 0:
          return None
       return row[0][0]
 
@@ -163,8 +165,12 @@ class MBTiles(object):
                                   'maxX': row['max(tile_column)'],\
                                   'minY': row['min(tile_row)'],\
                                   'maxY': row['max(tile_row)'],\
+                                  'count': row['count(zoom_level)'],\
                                  }
      outstr = json.dumps(bounds,indent=2)
+     # diagnostic info
+     with open('./output/bounds.json','w') as bounds_fp:
+        bounds_fp.write(outstr)
      #print('bounds:%s'%outstr)
 
    def summarize(self):
@@ -236,9 +242,8 @@ def get_tile(zoom,tilex,tiley):
 def get_regions():
    global regions
    # error out if environment is missing
-   MR_SSD = os.environ["MR_SSD"]
 
-   REGION_INFO = os.path.join(MR_SSD,'../resources/regions.json')
+   REGION_INFO = './regions.json'
    with open(REGION_INFO,'r') as region_fp:
       try:
          data = json.loads(region_fp.read())
@@ -336,7 +341,16 @@ def fetch_quad_for(tileX, tileY, zoom):
   
 def download_region(region):
    global src # the opened url for satellite images
- 
+
+   # attach to the correct output database
+   dbname = 'sat-%s-sentinel-z0_13.mbtiles'%region
+   if not os.path.isdir('./output'):
+      os.mkdir('./output')
+   dbpath = './output/%s'%dbname
+   if not os.path.exists(dbpath):
+      shutil.copyfile('./satellite.mbtiles',dbpath) 
+   mbTyles = MBTiles(dbpath)
+   mbTyles.get_bounds()
    # print some summary info for this region
    stdscr.addstr(1,0,"ZOOM")
    stdscr.addstr(0,15,region)
@@ -365,21 +379,26 @@ def download_region(region):
       stdscr.addstr(zoom+2,20,str(tiles))
       hours = tiles/3600/24.0
       stdscr.addstr(zoom+2,50,'%0.2f'%hours)
+      stdscr.refresh()
 
    # Open a WMTS source
    src = WMTS(url)
    # Look at current tiles, if larges than threshold, get the 4 tiles a zoom+1
    for zoom in range(bbox_zoom_start-1,14):
-      processed = 0
+      processed = bbox_limits.get('count',0)
       for ytile in range(bbox_limits[zoom]['minY'],bbox_limits[zoom]['maxY']):
          for xtile in range(bbox_limits[zoom]['minX'],bbox_limits[zoom]['maxX']):
             processed += 4
-            raw = mbTiles.GetTile(zoom, xtile, ytile)
+            try:
+               raw = mbTiles.GetTile(zoom, xtile, ytile)
+            except Exception as e:
+               stdscr.addstr(0,60,str(e),curses.color_pair(2))
+               
             if len(raw) > threshold:
                fetch_quad_for(xtile, ytile, zoom)
             if processed % 10 == 0:
-               stdscr.addstr(zoom+2,60,"%d"%processed)
-
+               stdscr.addstr(zoom+2,10,"%d"%processed)
+               stdscr.refresh()
 
          break         
 
@@ -415,7 +434,7 @@ def main():
    args = parse_args()
    get_regions()
    if not args.mbtiles:
-      args.mbtiles = 'satellite.mbtiles'
+      args.mbtiles = './satellite.mbtiles'
    mbTiles  = MBTiles(args.mbtiles)
    mbTiles.get_bounds()
 
