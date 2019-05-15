@@ -22,7 +22,7 @@ import shutil
 url =  "https://tiles.maps.eox.at/wmts?layer=s2cloudless-2018_3857&style=default&tilematrixset=g&Service=WMTS&Request=GetTile&Version=1.0.0&Format=image%2Fjpeg&TileMatrix={z}&TileCol={x}&TileRow={y}"
 src = object # the open url source
 # tiles smaller than this are probably ocean
-threshold = 2000
+threshold = 800
 
 # GLOBALS
 mbTiles = object
@@ -70,6 +70,9 @@ class MBTiles(object):
       sql = 'CREATE TABLE IF NOT EXISTS images (tile_data blob,tile_id text)'
       self.c.execute(sql)
 
+      sql = 'CREATE TABLE IF NOT EXISTS satdata (zoom_level INTEGER,name text,value text)'
+      self.c.execute(sql)
+
       sql = 'CREATE VIEW IF NOT EXISTS tiles AS SELECT map.zoom_level AS zoom_level, map.tile_column AS tile_column, map.tile_row AS tile_row, images.tile_data AS tile_data FROM map JOIN images ON images.tile_id = map.tile_id'
       self.c.execute(sql)
 
@@ -92,6 +95,16 @@ class MBTiles(object):
 
       self.conn.commit()
 
+   def SetSatData(self, zoomLevel, name, value):
+      if not self.schemaReady:
+         self.CheckSchema()
+
+      self.c.execute("UPDATE satdata SET value=?, zoom_level=? WHERE name=?", (zoomLevel, value, name))
+      if self.c.rowcount == 0:
+         self.c.execute("INSERT INTO satdata (zoom_level, name, value) VALUES (?, ?, ?);", (zoomLevel, name, value))
+
+      self.conn.commit()
+
    def DeleteMetaData(self, name):
       if not self.schemaReady:
          self.CheckSchema()
@@ -101,18 +114,34 @@ class MBTiles(object):
       if self.c.rowcount == 0:
          raise RuntimeError("Metadata name not found")
 
+   def DeleteSatData(self, zoomLevel, name):
+      if not self.schemaReady:
+         self.CheckSchema()
+
+      self.c.execute("DELETE FROM satdata WHERE name = ? AND zoom_level = ?", (zoomLevel, name,))
+      self.conn.commit()
+      if self.c.rowcount == 0:
+         raise RuntimeError("SatData name %s not found"%name)
+
    def SetTile(self, zoomLevel, tileColumn, tileRow, data):
       if not self.schemaReady:
          self.CheckSchema()
 
       tile_id = self.TileExists(zoomLevel, tileColumn, tileRow)
       if tile_id: 
+         operation = 'update images'
          self.c.execute("UPDATE images SET tile_data=? WHERE tile_id = ?;", (data, tilee_id))
       else: # this is not an update
          tile_id = uuid.uuid4().hex
          self.c.execute("INSERT INTO images ( tile_data,tile_id) VALUES ( ?, ?);", (data,unicode(tile_id)))
+         if self.c.rowcount != 1:
+            raise RuntimeError("Insert image failure")
+         operation = 'insert into map'
          self.c.execute("INSERT INTO map (zoom_level, tile_column, tile_row, tile_id) VALUES (?, ?, ?, ?);", 
             (zoomLevel, tileColumn, tileRow, tile_id))
+         if self.c.rowcount != 1:
+            raise RuntimeError("Failure %s "%operation)
+   
 
    def DeleteTile(self, zoomLevel, tileColumn, tileRow):
       if not self.schemaReady:
@@ -141,6 +170,7 @@ class MBTiles(object):
       # if the tile already exists, do nothing
       tile_id = self.TileExists(zoomLevel, tileColumn, tileRow)
       if tile_id:
+         #print('tile already exists -- skipping')
          return 
       try:
          r = src.get(zoomLevel,tileColumn,tileRow)
@@ -169,17 +199,23 @@ class MBTiles(object):
                                  }
      outstr = json.dumps(bounds,indent=2)
      # diagnostic info
-     with open('./output/bounds.json','w') as bounds_fp:
+     with open('./work/bounds.json','w') as bounds_fp:
         bounds_fp.write(outstr)
      #print('bounds:%s'%outstr)
 
    def summarize(self):
      sql = 'select zoom_level, min(tile_column),max(tile_column),min(tile_row),max(tile_row), count(zoom_level) from tiles group by zoom_level;'
-     rows = self.c.execute(sql)
-     rows = list(rows)
+     self.c.execute(sql)
+     rows = self.c.fetchall()
      print('Zoom Levels Found:%s'%len(rows))
      for row in rows:
-         print(row)
+         print('%s %s %s %s %s %s %s'%(row[0],row[1],row[2],row[3],row[4],\
+              row[5], (row[2]-row[1]+1) * ( row[4]-row[3]+1)))
+         mbTiles.SetSatData(row[0],'minX',row[1])
+         mbTiles.SetSatData(row[0],'maxX',row[2])
+         mbTiles.SetSatData(row[0],'minY',row[3])
+         mbTiles.SetSatData(row[0],'maxY',row[4])
+         mbTiles.SetSatData(row[0],'count',row[5])
 
 class WMTS(object):
 
@@ -197,9 +233,9 @@ class WMTS(object):
       
 def to_dir():
    if args.dir != ".":
-      prefix = os.path.join(args.dir,'output')
+      prefix = os.path.join(args.dir,'work')
    else:
-      prefix = './output'
+      prefix = './work'
    for zoom in range(5):
       n = numTiles(zoom)
       for row in range(n):
@@ -220,7 +256,7 @@ def parse_args():
     parser.add_argument("-s", "--summarize", help="Data about each zoom level.",action="store_true")
     parser.add_argument("--lat", help="Latitude degrees.",type=float)
     parser.add_argument("--lon", help="Longitude degrees.",type=float)
-    parser.add_argument("-d","--dir", help='Output to this directory (use "." for ./output/)')
+    parser.add_argument("-d","--dir", help='Output to this directory (use "." for ./work/)')
     parser.add_argument("-g", "--get", help='get WMTS tiles from this URL(of "." for Sentinel Cloudless).')
     return parser.parse_args()
 
@@ -252,7 +288,7 @@ def get_regions():
          print("regions.json parse error")
          sys.exit(1)
    
-def key_parse(stdscr):
+def view_tiles(stdscr):
    # permits viewing of individual image tiles (-x,-y,-y parameters)
    global args
    global mbTiles
@@ -344,9 +380,7 @@ def download_region(region):
 
    # attach to the correct output database
    dbname = 'sat-%s-sentinel-z0_13.mbtiles'%region
-   if not os.path.isdir('./output'):
-      os.mkdir('./output')
-   dbpath = './output/%s'%dbname
+   dbpath = './work/%s'%dbname
    if not os.path.exists(dbpath):
       shutil.copyfile('./satellite.mbtiles',dbpath) 
    mbTyles = MBTiles(dbpath)
@@ -381,6 +415,72 @@ def download_region(region):
       stdscr.addstr(zoom+2,50,'%0.2f'%hours)
       stdscr.refresh()
 
+def test(region):
+   global src # the opened url for satellite images
+
+   # attach to the correct output database
+   dbname = 'sat-%s-sentinel-z0_13.mbtiles'%region
+   if not os.path.isdir('./work'):
+      os.mkdir('./work')
+   dbpath = './work/%s'%dbname
+   if not os.path.exists(dbpath):
+      shutil.copyfile('./satellite.mbtiles',dbpath) 
+   mbTyles = MBTiles(dbpath)
+   mbTyles.get_bounds()
+   # print some summary info for this region
+   print region
+   # 
+   cur_box = regions[region]
+   # get the number of tiles needed for each zoom within bbox
+   for zoom in range(bbox_zoom_start-1,14):
+      xmin,xmax,ymin,ymax = bbox_tile_limits(cur_box['west'],cur_box['south'],\
+            cur_box['east'],cur_box['north'],zoom)
+      print(xmin,xmax,ymin,ymax,zoom)
+      tot_tiles = (xmax-xmin)*(ymax-ymin)
+      bbox_limits[zoom] = { 'minX': xmin,'maxX':xmax,'minY':ymin,'maxY':ymax,                              'count':tot_tiles}
+      if bounds.get(zoom,-1) == -1: continue
+      tiles = (bounds[zoom]['maxX']-bounds[zoom]['minX'])*\
+              (bounds[zoom]['maxY']-bounds[zoom]['minY'])
+      print('zoom %s has %s tiles'%(zoom,str(tiles)))
+   with open('./work/bbox_limits','w') as fp:
+      fp.write(json.dumps(bbox_limits,indent=2))
+
+   # Open a WMTS source
+   try:
+      src = WMTS(url)
+   except:
+      print('failed to open source')
+      sys.exit(1)
+   # Look at current tiles, if larges than threshold, get the 4 tiles a zoom+1
+   for zoom in range(bbox_zoom_start-1,14):
+      print("new zoom level:%s"%zoom)
+      if bounds.get(zoom,-1) == -1:
+         processed = 0
+      else:
+         processed = bounds[zoom].get('count',0)
+      print('range of Y:(%s,%s)'%(bbox_limits[zoom]['minY'],bbox_limits[zoom]['maxY']+1))
+      for ytile in range(bbox_limits[zoom]['minY'],bbox_limits[zoom]['maxY']+1):
+         print('ytile:%s'%ytile)
+         print('range of X:%s,%s)'%(bbox_limits[zoom]['minX'],bbox_limits[zoom]['maxX']+1))
+         for xtile in range(bbox_limits[zoom]['minX'],bbox_limits[zoom]['maxX']+1):
+            print('xtile:%s'%xtile)
+            processed += 4
+            try:
+               raw = mbTiles.GetTile(zoom, xtile, ytile)
+            except Exception as e:
+               print('GetTile returned exception')
+               sys.exit()
+               
+            if len(raw) > threshold:
+               print('downloading quad at xtile:%s ytile:%s for zoom:%s'%(xtile,ytile,zoom))
+               fetch_quad_for(xtile, ytile, zoom)
+            else:
+               print('x:%s y:%s size:%s'%(xtile,ytile,len(raw)))
+               print('skipping quad at xtile:%s ytile:%s for zoom:%s'%(xtile,ytile,zoom))
+               pass
+            #print('Zoom:%s Downloaded:%.2f%% out of %s'%(zoom,processed*100.0/\
+             #  bbox_limits[zoom]['count']/2,bbox_limits[zoom+1]['count'],))
+      #sys.exit(1)
    # Open a WMTS source
    src = WMTS(url)
    # Look at current tiles, if larges than threshold, get the 4 tiles a zoom+1
@@ -431,6 +531,8 @@ def download(scr):
 def main():
    global args
    global mbTiles
+   if not os.path.isdir('./work'):
+      os.mkdir('./work')
    args = parse_args()
    get_regions()
    if not args.mbtiles:
@@ -443,7 +545,7 @@ def main():
       mbTiles.summarize()
       sys.exit(0)
    if args.x and args.y:
-      curses.wrapper(key_parse)
+      curses.wrapper(view_tiles)
       sys.exit(0)
    if args.lon and args.lat:
       if not args.zoom:
@@ -456,7 +558,7 @@ def main():
    if args.dir != None:
       to_dir()
       sys.exit(0)
-
+   test('san_jose')
    curses.wrapper(download) 
    
 
