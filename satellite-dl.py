@@ -95,6 +95,15 @@ class MBTiles(object):
 
       self.conn.commit()
 
+   def DeleteMetaData(self, name):
+      if not self.schemaReady:
+         self.CheckSchema()
+
+      self.c.execute("DELETE FROM metadata WHERE name = ?", (name,))
+      self.conn.commit()
+      if self.c.rowcount == 0:
+         raise RuntimeError("Metadata name not found")
+
    def SetSatData(self, zoomLevel, name, value):
       if not self.schemaReady:
          self.CheckSchema()
@@ -105,14 +114,12 @@ class MBTiles(object):
 
       self.conn.commit()
 
-   def DeleteMetaData(self, name):
-      if not self.schemaReady:
-         self.CheckSchema()
-
-      self.c.execute("DELETE FROM metadata WHERE name = ?", (name,))
-      self.conn.commit()
-      if self.c.rowcount == 0:
-         raise RuntimeError("Metadata name not found")
+   def GetSatData(self,zoomLevel):
+      rows = self.c.execute("SELECT name, value FROM satdata WHERE zoom_level = ?",(zoomLevel,))
+      out = {}
+      for row in rows:
+         out[row[0]] = row[1]
+      return out
 
    def DeleteSatData(self, zoomLevel, name):
       if not self.schemaReady:
@@ -170,7 +177,7 @@ class MBTiles(object):
       # if the tile already exists, do nothing
       tile_id = self.TileExists(zoomLevel, tileColumn, tileRow)
       if tile_id:
-         #print('tile already exists -- skipping')
+         print('tile already exists -- skipping')
          return 
       try:
          r = src.get(zoomLevel,tileColumn,tileRow)
@@ -216,6 +223,13 @@ class MBTiles(object):
          mbTiles.SetSatData(row[0],'minY',row[3])
          mbTiles.SetSatData(row[0],'maxY',row[4])
          mbTiles.SetSatData(row[0],'count',row[5])
+  
+   def CountTiles(self,zoom):
+      self.c.execute("select tile_data from tiles where zoom_level = ?",(zoom,))
+      num = 0
+      while self.c.fetchone():
+         num += 1 
+      return num
 
 class WMTS(object):
 
@@ -355,6 +369,20 @@ def coordinates2WmtsTilesNumbers(lat_deg, lon_deg, zoom):
   ytile = int(n - ytile - 1)
   return (xtile, ytile)
 
+def set_up_target_db(region):
+   global mbTiles
+   mbTiles = None
+
+   # attach to the correct output database
+   dbname = 'sat-%s-sentinel-z0_13.mbtiles'%region
+   if not os.path.isdir('./work'):
+      os.mkdir('./work')
+   dbpath = './work/%s'%dbname
+   if not os.path.exists(dbpath):
+      shutil.copyfile('./satellite.mbtiles',dbpath) 
+   mbTiles = MBTiles(dbpath)
+   mbTiles.get_bounds()
+
 def bbox_tile_limits(west, south, east, north, zoom):
    #print('west:%s south:%s east:%s north:%s zoom:%s'%(west,south,east,north,zoom))
    sw = coordinates2WmtsTilesNumbers(south,west,zoom)
@@ -366,6 +394,36 @@ def bbox_tile_limits(west, south, east, north, zoom):
    #print('number of tiles of zoom %s:%s = %d seconds at 8/second'%(zoom,y_num*x_num,y_num*x_num/8))
    #return(xmin,xmax,ymin,ymax)
    return(sw[0],ne[0]+1,sw[1],ne[1]+1)
+
+def record_bbox_debug_info(region):
+   cur_box = regions[region]
+   for zoom in range(bbox_zoom_start-1,14):
+      xmin,xmax,ymin,ymax = bbox_tile_limits(cur_box['west'],cur_box['south'],\
+            cur_box['east'],cur_box['north'],zoom)
+      #print(xmin,xmax,ymin,ymax,zoom)
+      tot_tiles = mbTiles.CountTiles(zoom)
+      bbox_limits[zoom] = { 'minX': xmin,'maxX':xmax,'minY':ymin,'maxY':ymax,                              'count':tot_tiles}
+   with open('./work/bbox_limits','w') as fp:
+      fp.write(json.dumps(bbox_limits,indent=2))
+
+def put_accumulators(zoom,ocean,land,count,done):
+   mbTiles.SetSatData(zoom,'ocean',str(ocean))
+   mbTiles.SetSatData(zoom,'land',str(land))
+   mbTiles.SetSatData(zoom,'count',str(count))
+   mbTiles.SetSatData(zoom,'done',str(done))
+
+def get_accumulators(zoom):
+   data = mbTiles.GetSatData(zoom)
+   tileX = bbox_limits[zoom].get('minX',0)
+   tileY = bbox_limits[zoom].get('minY',0)
+   return (\
+      int(data.get('ocean',0)),\
+      int(data.get('land',0)),\
+      int(data.get('tileX',tileX)),\
+      int(data.get('tileY',tileY)),\
+      int(data.get('count',0)),\
+      bool(data.get('done',False))\
+   )
 
 def fetch_quad_for(tileX, tileY, zoom):
    # get 4 tiles for zoom+1
@@ -383,8 +441,8 @@ def download_region(region):
    dbpath = './work/%s'%dbname
    if not os.path.exists(dbpath):
       shutil.copyfile('./satellite.mbtiles',dbpath) 
-   mbTyles = MBTiles(dbpath)
-   mbTyles.get_bounds()
+   mbTiles = MBTiles(dbpath)
+   mbTiles.get_bounds()
    # print some summary info for this region
    stdscr.addstr(1,0,"ZOOM")
    stdscr.addstr(0,15,region)
@@ -413,94 +471,51 @@ def download_region(region):
       stdscr.addstr(zoom+2,20,str(tiles))
       hours = tiles/3600/24.0
       stdscr.addstr(zoom+2,50,'%0.2f'%hours)
+      if processed % 10 == 0:
+               stdscr.addstr(zoom+2,10,"%d"%processed)
+               stdscr.refresh()
+
       stdscr.refresh()
 
 def test(region):
-   global src # the opened url for satellite images
 
-   # attach to the correct output database
-   dbname = 'sat-%s-sentinel-z0_13.mbtiles'%region
-   if not os.path.isdir('./work'):
-      os.mkdir('./work')
-   dbpath = './work/%s'%dbname
-   if not os.path.exists(dbpath):
-      shutil.copyfile('./satellite.mbtiles',dbpath) 
-   mbTyles = MBTiles(dbpath)
-   mbTyles.get_bounds()
-   # print some summary info for this region
-   print region
-   # 
-   cur_box = regions[region]
-   # get the number of tiles needed for each zoom within bbox
-   for zoom in range(bbox_zoom_start-1,14):
-      xmin,xmax,ymin,ymax = bbox_tile_limits(cur_box['west'],cur_box['south'],\
-            cur_box['east'],cur_box['north'],zoom)
-      print(xmin,xmax,ymin,ymax,zoom)
-      tot_tiles = (xmax-xmin)*(ymax-ymin)
-      bbox_limits[zoom] = { 'minX': xmin,'maxX':xmax,'minY':ymin,'maxY':ymax,                              'count':tot_tiles}
-      if bounds.get(zoom,-1) == -1: continue
-      tiles = (bounds[zoom]['maxX']-bounds[zoom]['minX'])*\
-              (bounds[zoom]['maxY']-bounds[zoom]['minY'])
-      print('zoom %s has %s tiles'%(zoom,str(tiles)))
-   with open('./work/bbox_limits','w') as fp:
-      fp.write(json.dumps(bbox_limits,indent=2))
+   set_up_target_db(region)
+
+   record_bbox_debug_info(region)
 
    # Open a WMTS source
+   global src # the opened url for satellite images
    try:
       src = WMTS(url)
    except:
       print('failed to open source')
       sys.exit(1)
-   # Look at current tiles, if larges than threshold, get the 4 tiles a zoom+1
+
+   # Look at tiles we alrady have to predict which to get at zoom+1
    for zoom in range(bbox_zoom_start-1,14):
       print("new zoom level:%s"%zoom)
-      if bounds.get(zoom,-1) == -1:
-         processed = 0
-      else:
-         processed = bounds[zoom].get('count',0)
-      print('range of Y:(%s,%s)'%(bbox_limits[zoom]['minY'],bbox_limits[zoom]['maxY']+1))
+      ocean, land, startx, starty, tot_in_box, done = get_accumulators(zoom)
+
       for ytile in range(bbox_limits[zoom]['minY'],bbox_limits[zoom]['maxY']+1):
-         print('ytile:%s'%ytile)
-         print('range of X:%s,%s)'%(bbox_limits[zoom]['minX'],bbox_limits[zoom]['maxX']+1))
+         mbTiles.SetSatData(zoom,'tileY',str(ytile))
          for xtile in range(bbox_limits[zoom]['minX'],bbox_limits[zoom]['maxX']+1):
-            print('xtile:%s'%xtile)
-            processed += 4
+            if xtile % 20:
+               mbTiles.SetSatData(zoom,'tileX',str(xtile))
             try:
                raw = mbTiles.GetTile(zoom, xtile, ytile)
             except Exception as e:
-               print('GetTile returned exception')
-               sys.exit()
-               
+               print('GetTile returned %s'%str(e))
             if len(raw) > threshold:
-               print('downloading quad at xtile:%s ytile:%s for zoom:%s'%(xtile,ytile,zoom))
+               land += 4
                fetch_quad_for(xtile, ytile, zoom)
             else:
-               print('x:%s y:%s size:%s'%(xtile,ytile,len(raw)))
-               print('skipping quad at xtile:%s ytile:%s for zoom:%s'%(xtile,ytile,zoom))
-               pass
-            #print('Zoom:%s Downloaded:%.2f%% out of %s'%(zoom,processed*100.0/\
-             #  bbox_limits[zoom]['count']/2,bbox_limits[zoom+1]['count'],))
-      #sys.exit(1)
-   # Open a WMTS source
-   src = WMTS(url)
-   # Look at current tiles, if larges than threshold, get the 4 tiles a zoom+1
-   for zoom in range(bbox_zoom_start-1,14):
-      processed = bbox_limits.get('count',0)
-      for ytile in range(bbox_limits[zoom]['minY'],bbox_limits[zoom]['maxY']):
-         for xtile in range(bbox_limits[zoom]['minX'],bbox_limits[zoom]['maxX']):
-            processed += 4
-            try:
-               raw = mbTiles.GetTile(zoom, xtile, ytile)
-            except Exception as e:
-               stdscr.addstr(0,60,str(e),curses.color_pair(2))
-               
-            if len(raw) > threshold:
-               fetch_quad_for(xtile, ytile, zoom)
-            if processed % 10 == 0:
-               stdscr.addstr(zoom+2,10,"%d"%processed)
-               stdscr.refresh()
-
-         break         
+               ocean += 4
+      # record/report results for this zoom level
+      count = mbTiles.CountTiles(zoom+1)
+      if count == ocean + land:
+         done = True
+      put_accumulators(zoom,ocean,land,count,done)
+      #sys.exit() #for debugging
 
 def download(scr):
     global stdscr
