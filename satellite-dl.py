@@ -166,7 +166,7 @@ class MBTiles(object):
       if not self.schemaReady:
          self.CheckSchema()
 
-      sql = 'select tile_id from map where zoom_level = ? and tile_column = ? and tile_row = ?'
+      sql = 'select tile_data from tiles where zoom_level = ? and tile_column = ? and tile_row = ?'
       self.c.execute(sql,(zoomLevel, tileColumn, tileRow))
       row = self.c.fetchall()
       if len(row) == 0:
@@ -208,7 +208,7 @@ class MBTiles(object):
      # diagnostic info
      with open('./work/bounds.json','w') as bounds_fp:
         bounds_fp.write(outstr)
-     #print('bounds:%s'%outstr)
+     return bounds
 
    def summarize(self):
      sql = 'select zoom_level, min(tile_column),max(tile_column),min(tile_row),max(tile_row), count(zoom_level) from tiles group by zoom_level;'
@@ -223,6 +223,8 @@ class MBTiles(object):
          mbTiles.SetSatData(row[0],'minY',row[3])
          mbTiles.SetSatData(row[0],'maxY',row[4])
          mbTiles.SetSatData(row[0],'count',row[5])
+         
+         
   
    def CountTiles(self,zoom):
       self.c.execute("select tile_data from tiles where zoom_level = ?",(zoom,))
@@ -261,6 +263,48 @@ def to_dir():
             with open(this_path,'w') as fp:
                fp.write(raw)
 
+def list_tile_sizes():
+   bounds = mbTiles.get_bounds()
+   for zoom in sorted(bounds):
+      if bounds[zoom]['minX'] != 0:
+          break
+   for i in range(zoom,14):
+      header = True
+      if bounds.get(i,0) == 0: continue
+      for y in range(bounds[i]['minY'],bounds[i]['maxY']):
+         tilelen={}
+         outstr = '%s  '%y
+         lower = bounds[i]['minX']
+         upper = bounds[i]['maxX'] 
+         if header:
+            print('%s   %s   %s'%(i, lower, upper))
+            header = False
+         for x in range(lower,upper):
+            data = mbTiles.GetTile(i, x, y)
+            tilelen[x] = len(data)
+            if len(data) > threshold:
+               outstr  += 'X'
+            else:
+               outstr += 'O'
+         print(outstr)
+         print str(tilelen)
+         
+def debug_one_tile():
+   if not args.x:
+      args.x = 2
+      args.y = 2
+      args.zoom = 2
+   
+   global src # the opened url for satellite images
+   try:
+      src = WMTS(url)
+   except:
+      print('failed to open source')
+      sys.exit(1)
+   response = src.get(args.zoom,args.x,args.y)
+   print(response.status) 
+   print(len(response.data))
+   
 def parse_args():
     parser = argparse.ArgumentParser(description="Display mbtile image.")
     parser.add_argument('-z',"--zoom", help="zoom level. (Default=2)", type=int,default=2)
@@ -268,6 +312,8 @@ def parse_args():
     parser.add_argument("-y",  help="tileY", type=int)
     parser.add_argument("-m", "--mbtiles", help="mbtiles filename.")
     parser.add_argument("-s", "--summarize", help="Data about each zoom level.",action="store_true")
+    parser.add_argument("-l", "--list", help="List tile sizes.",action="store_true")
+    parser.add_argument("-v", "--debug", help="Get one tile from source.",action="store_true")
     parser.add_argument("--lat", help="Latitude degrees.",type=float)
     parser.add_argument("--lon", help="Longitude degrees.",type=float)
     parser.add_argument("-d","--dir", help='Output to this directory (use "." for ./work/)')
@@ -558,6 +604,12 @@ def main():
    print('mbtiles filename:%s'%args.mbtiles)
    if args.summarize:
       mbTiles.summarize()
+      sys.exit(0)
+   if args.debug:
+      debug_one_tile()
+      sys.exit(0)
+   if args.list != None:
+      list_tile_sizes()
       sys.exit(0)
    if args.x and args.y:
       curses.wrapper(view_tiles)
