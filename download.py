@@ -598,17 +598,17 @@ def main():
    get_regions()
    if not args.mbtiles:
       args.mbtiles = './satellite.mbtiles'
+   print('mbtiles filename:%s'%args.mbtiles)
    mbTiles  = MBTiles(args.mbtiles)
    mbTiles.get_bounds()
 
-   print('mbtiles filename:%s'%args.mbtiles)
    if args.summarize:
       mbTiles.summarize()
       sys.exit(0)
    if args.debug:
       debug_one_tile()
       sys.exit(0)
-   if args.list != None:
+   if args.list:
       list_tile_sizes()
       sys.exit(0)
    if args.x and args.y:
