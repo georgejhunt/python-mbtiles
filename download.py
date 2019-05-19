@@ -104,7 +104,7 @@ class MBTiles(object):
       if self.c.rowcount == 0:
          raise RuntimeError("Metadata name not found")
 
-   def SetSatData(self, zoomLevel, name, value):
+   def SetSatMetaData(self, zoomLevel, name, value):
       if not self.schemaReady:
          self.CheckSchema()
 
@@ -114,7 +114,7 @@ class MBTiles(object):
 
       self.conn.commit()
 
-   def GetSatData(self,zoomLevel):
+   def GetSatMetaData(self,zoomLevel):
       rows = self.c.execute("SELECT name, value FROM satdata WHERE zoom_level = ?",(zoomLevel,))
       out = {}
       for row in rows:
@@ -218,11 +218,11 @@ class MBTiles(object):
      for row in rows:
          print('%s %s %s %s %s %s %s'%(row[0],row[1],row[2],row[3],row[4],\
               row[5], (row[2]-row[1]+1) * ( row[4]-row[3]+1)))
-         mbTiles.SetSatData(row[0],'minX',row[1])
-         mbTiles.SetSatData(row[0],'maxX',row[2])
-         mbTiles.SetSatData(row[0],'minY',row[3])
-         mbTiles.SetSatData(row[0],'maxY',row[4])
-         mbTiles.SetSatData(row[0],'count',row[5])
+         mbTiles.SetSatMetaData(row[0],'minX',row[1])
+         mbTiles.SetSatMetaData(row[0],'maxX',row[2])
+         mbTiles.SetSatMetaData(row[0],'minY',row[3])
+         mbTiles.SetSatMetaData(row[0],'maxY',row[4])
+         mbTiles.SetSatMetaData(row[0],'count',row[5])
          
          
   
@@ -361,7 +361,8 @@ def view_tiles(stdscr):
    else:
       state['tileX'] = bounds[state['zoom']]['minX']
    if args.y:
-      state['tileY'] = 2 ** zoom  - args.y - 1
+      #state['tileY'] = 2 ** zoom  - args.y - 1
+      state['tileY'] = args.y
    else:
       state['tileY'] = bounds[state['zoom']]['minY']
    while 1:
@@ -412,7 +413,7 @@ def coordinates2WmtsTilesNumbers(lat_deg, lon_deg, zoom):
   n = 2.0 ** zoom
   xtile = int((float(lon_deg) + 180.0) / 360.0 * n)
   ytile = int((1.0 - math.log(math.tan(lat_rad) + (1 / math.cos(lat_rad))) / math.pi) / 2.0 * n)
-  ytile = int(n - ytile - 1)
+  #ytile = int(n - ytile - 1)
   return (xtile, ytile)
 
 def set_up_target_db(region):
@@ -453,13 +454,13 @@ def record_bbox_debug_info(region):
       fp.write(json.dumps(bbox_limits,indent=2))
 
 def put_accumulators(zoom,ocean,land,count,done):
-   mbTiles.SetSatData(zoom,'ocean',str(ocean))
-   mbTiles.SetSatData(zoom,'land',str(land))
-   mbTiles.SetSatData(zoom,'count',str(count))
-   mbTiles.SetSatData(zoom,'done',str(done))
+   mbTiles.SetSatMetaData(zoom,'ocean',str(ocean))
+   mbTiles.SetSatMetaData(zoom,'land',str(land))
+   mbTiles.SetSatMetaData(zoom,'count',str(count))
+   mbTiles.SetSatMetaData(zoom,'done',str(done))
 
 def get_accumulators(zoom):
-   data = mbTiles.GetSatData(zoom)
+   data = mbTiles.GetSatMetaData(zoom)
    tileX = bbox_limits[zoom].get('minX',0)
    tileY = bbox_limits[zoom].get('minY',0)
    return (\
@@ -540,13 +541,14 @@ def test(region):
    # Look at tiles we alrady have to predict which to get at zoom+1
    for zoom in range(bbox_zoom_start-1,14):
       print("new zoom level:%s"%zoom)
+      
       ocean, land, startx, starty, tot_in_box, done = get_accumulators(zoom)
 
       for ytile in range(bbox_limits[zoom]['minY'],bbox_limits[zoom]['maxY']+1):
-         mbTiles.SetSatData(zoom,'tileY',str(ytile))
+         mbTiles.SetSatMetaData(zoom,'tileY',str(ytile))
          for xtile in range(bbox_limits[zoom]['minX'],bbox_limits[zoom]['maxX']+1):
             if xtile % 20:
-               mbTiles.SetSatData(zoom,'tileX',str(xtile))
+               mbTiles.SetSatMetaData(zoom,'tileX',str(xtile))
             try:
                raw = mbTiles.GetTile(zoom, xtile, ytile)
             except Exception as e:
@@ -556,10 +558,14 @@ def test(region):
                fetch_quad_for(xtile, ytile, zoom)
             else:
                ocean += 4
+         
+      print('zoom %s completed'%zoom)
+      mbTiles.SetSatMetaData(zoom,'done',True)
+      sys.exit()
       # record/report results for this zoom level
       count = mbTiles.CountTiles(zoom+1)
       if count == ocean + land:
-         done = True
+          done = True
       put_accumulators(zoom,ocean,land,count,done)
       #sys.exit() #for debugging
 
@@ -626,6 +632,7 @@ def main():
       to_dir()
       sys.exit(0)
    test('san_jose')
+   sys.exit()
    curses.wrapper(download) 
    
 
