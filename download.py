@@ -17,6 +17,7 @@ import json
 import math
 import uuid
 import shutil
+import yaml
 
 # Download source of satellite imagry
 url =  "https://tiles.maps.eox.at/wmts?layer=s2cloudless-2018_3857&style=default&tilematrixset=g&Service=WMTS&Request=GetTile&Version=1.0.0&Format=image%2Fjpeg&TileMatrix={z}&TileCol={x}&TileRow={y}"
@@ -32,6 +33,8 @@ regions = {}
 bbox_zoom_start = 8
 bbox_limits = {}
 stdscr = object # cursors object for progress feedback
+config_fn = 'config.json'
+config = {}
 
 class MBTiles(object):
    def __init__(self, filename):
@@ -108,14 +111,14 @@ class MBTiles(object):
       if not self.schemaReady:
          self.CheckSchema()
 
-      self.c.execute("UPDATE satdata SET value=?, zoom_level=? WHERE name=?", (zoomLevel, value, name))
+      self.c.execute("UPDATE satdata SET value=? WHERE zoom_level=? AND name = ?", (value, zoomLevel, name))
       if self.c.rowcount == 0:
          self.c.execute("INSERT INTO satdata (zoom_level, name, value) VALUES (?, ?, ?);", (zoomLevel, name, value))
 
       self.conn.commit()
 
    def GetSatMetaData(self,zoomLevel):
-      rows = self.c.execute("SELECT name, value FROM satdata WHERE zoom_level = ?",(zoomLevel,))
+      rows = self.c.execute("SELECT name, value FROM satdata WHERE zoom_level = ?",(str(zoomLevel),))
       out = {}
       for row in rows:
          out[row[0]] = row[1]
@@ -247,6 +250,34 @@ class WMTS(object):
       #print(url)
       return(self.http.request("GET",url))
       
+def put_config():
+   with open(config_fn,'w') as cf:
+     cf.write(json.dumps(config,indent=2))
+ 
+def get_config():
+   if not os.path.exists(config_fn):
+      put_config()
+
+   with open(config_fn,'r') as cf:
+     config = json.loads(cf.read())
+    
+def set_up_target_db(region):
+   global mbTiles
+   mbTiles = None
+
+   # attach to the correct output database
+   dbname = 'sat-%s-sentinel-z0_13.mbtiles'%region
+   if not os.path.isdir('./work'):
+      os.mkdir('./work')
+   dbpath = './work/%s'%dbname
+   if not os.path.exists(dbpath):
+      shutil.copyfile('./satellite.mbtiles',dbpath) 
+   mbTiles = MBTiles(dbpath)
+   mbTiles.get_bounds()
+   config['last_db'] = dbpath
+   put_config()
+
+   
 def to_dir():
    if args.dir != ".":
       prefix = os.path.join(args.dir,'work')
@@ -307,7 +338,7 @@ def debug_one_tile():
    
 def parse_args():
     parser = argparse.ArgumentParser(description="Display mbtile image.")
-    parser.add_argument('-z',"--zoom", help="zoom level. (Default=2)", type=int,default=2)
+    parser.add_argument('-z',"--zoom", help="zoom level. (Default=2)", type=int)
     parser.add_argument("-x",  help="tileX", type=int)
     parser.add_argument("-y",  help="tileY", type=int)
     parser.add_argument("-m", "--mbtiles", help="mbtiles filename.")
@@ -352,9 +383,10 @@ def view_tiles(stdscr):
    # permits viewing of individual image tiles (-x,-y,-y parameters)
    global args
    global mbTiles
-   zoom =2
    if args.zoom:
-      zoom = args.zoom      
+      zoom = args.zoom
+   else:
+      zoom = 2
    state = { 'zoom': zoom}
    if args.x:
       state['tileX'] = args.x
@@ -416,20 +448,6 @@ def coordinates2WmtsTilesNumbers(lat_deg, lon_deg, zoom):
   #ytile = int(n - ytile - 1)
   return (xtile, ytile)
 
-def set_up_target_db(region):
-   global mbTiles
-   mbTiles = None
-
-   # attach to the correct output database
-   dbname = 'sat-%s-sentinel-z0_13.mbtiles'%region
-   if not os.path.isdir('./work'):
-      os.mkdir('./work')
-   dbpath = './work/%s'%dbname
-   if not os.path.exists(dbpath):
-      shutil.copyfile('./satellite.mbtiles',dbpath) 
-   mbTiles = MBTiles(dbpath)
-   mbTiles.get_bounds()
-
 def bbox_tile_limits(west, south, east, north, zoom):
    #print('west:%s south:%s east:%s north:%s zoom:%s'%(west,south,east,north,zoom))
    sw = coordinates2WmtsTilesNumbers(south,west,zoom)
@@ -440,7 +458,7 @@ def bbox_tile_limits(west, south, east, north, zoom):
    #print('ne_x:%s x_num:%s ne_y:%s y_num:%s'%(ne[0],x_num,ne[1],y_num))
    #print('number of tiles of zoom %s:%s = %d seconds at 8/second'%(zoom,y_num*x_num,y_num*x_num/8))
    #return(xmin,xmax,ymin,ymax)
-   return(sw[0],ne[0]+1,sw[1],ne[1]+1)
+   return(sw[0],ne[0]+1, ne[1], sw[1]+1)
 
 def record_bbox_debug_info(region):
    cur_box = regions[region]
@@ -460,13 +478,15 @@ def put_accumulators(zoom,ocean,land,count,done):
    mbTiles.SetSatMetaData(zoom,'done',str(done))
 
 def get_accumulators(zoom):
+   data = mbTiles.GetSatMetaData(zoom)
+   print str(data)
    return (\
-      int(mbTiles.GetSatMetaData(zoom,'ocean')),\
-      int(mbTiles.GetSatMetaData(zoom,'land')),\
-      int(mbTiles.GetSatMetaData(zoom,'tileX')),\
-      int(mbTiles.GetSatMetaData(zoom,'tileY')),\
-      int(mbTiles.GetSatMetaData(zoom,'count')),\
-      bool(mbTiles.GetSatMetaData(zoom,'done'))\
+      int(str(data.get('ocean',0))),\
+      int(str(data.get('land',0))),\
+      int(str(data.get('tileX',0))),\
+      int(str(data.get('tileY',0))),\
+      int(str(data.get('count',0))),\
+      bool(str(data.get('done',False)))\
    )
 
 def fetch_quad_for(tileX, tileY, zoom):
@@ -478,7 +498,9 @@ def fetch_quad_for(tileX, tileY, zoom):
    mbTiles.Commit()
 
 def is_done(zoom):
-   return mbTiles.GetSatMetaData(zoom,done)
+   data = mbTiles.GetSatMetaData(zoom)
+   print('zoom:%s data:%s'%(zoom,data))
+   return data.get('done',False)
   
 def download_region(region):
    global src # the opened url for satellite images
@@ -551,6 +573,7 @@ def test(region):
       for ytile in range(bbox_limits[zoom]['minY'],bbox_limits[zoom]['maxY']+1):
          mbTiles.SetSatMetaData(zoom,'tileY',str(ytile))
          for xtile in range(bbox_limits[zoom]['minX'],bbox_limits[zoom]['maxX']+1):
+            print('x:%s y:%s'%(xtile,ytile))
             if xtile % 20:
                mbTiles.SetSatMetaData(zoom,'tileX',str(xtile))
             try:
@@ -562,10 +585,11 @@ def test(region):
                fetch_quad_for(xtile, ytile, zoom)
             else:
                ocean += 4
+            sys.stdout.write('.')
          
       print('zoom %s completed'%zoom)
       mbTiles.SetSatMetaData(zoom,'done',True)
-      sys.exit()
+      #sys.exit()
       # record/report results for this zoom level
       count = mbTiles.CountTiles(zoom+1)
       if count == ocean + land:
@@ -604,13 +628,20 @@ def main():
    global mbTiles
    if not os.path.isdir('./work'):
       os.mkdir('./work')
+   get_config()
    args = parse_args()
    get_regions()
    if not args.mbtiles:
-      args.mbtiles = './satellite.mbtiles'
+      if config.get('last_db','') != '':
+         args.mbtiles = config['last_db']
+      else:
+         args.mbtiles = './work/sat-san_jose-sentinel-z0_13.mbtiles'
+
    print('mbtiles filename:%s'%args.mbtiles)
-   mbTiles  = MBTiles(args.mbtiles)
-   mbTiles.get_bounds()
+   if os.path.isfile(args.mbtiles):
+
+      mbTiles  = MBTiles(args.mbtiles)
+      mbTiles.get_bounds()
 
    if args.summarize:
       mbTiles.summarize()
@@ -621,7 +652,7 @@ def main():
    if args.list:
       list_tile_sizes()
       sys.exit(0)
-   if args.x and args.y:
+   if args.zoom and not args.y:
       curses.wrapper(view_tiles)
       sys.exit(0)
    if args.lon and args.lat:
