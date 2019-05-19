@@ -460,16 +460,13 @@ def put_accumulators(zoom,ocean,land,count,done):
    mbTiles.SetSatMetaData(zoom,'done',str(done))
 
 def get_accumulators(zoom):
-   data = mbTiles.GetSatMetaData(zoom)
-   tileX = bbox_limits[zoom].get('minX',0)
-   tileY = bbox_limits[zoom].get('minY',0)
    return (\
-      int(data.get('ocean',0)),\
-      int(data.get('land',0)),\
-      int(data.get('tileX',tileX)),\
-      int(data.get('tileY',tileY)),\
-      int(data.get('count',0)),\
-      bool(data.get('done',False))\
+      int(mbTiles.GetSatMetaData(zoom,'ocean')),\
+      int(mbTiles.GetSatMetaData(zoom,'land')),\
+      int(mbTiles.GetSatMetaData(zoom,'tileX')),\
+      int(mbTiles.GetSatMetaData(zoom,'tileY')),\
+      int(mbTiles.GetSatMetaData(zoom,'count')),\
+      bool(mbTiles.GetSatMetaData(zoom,'done'))\
    )
 
 def fetch_quad_for(tileX, tileY, zoom):
@@ -479,6 +476,9 @@ def fetch_quad_for(tileX, tileY, zoom):
    mbTiles.DownloadTile(zoom+1,tileX*2,tileY*2+1)
    mbTiles.DownloadTile(zoom+1,tileX*2+1,tileY*2+1)
    mbTiles.Commit()
+
+def is_done(zoom):
+   return mbTiles.GetSatMetaData(zoom,done)
   
 def download_region(region):
    global src # the opened url for satellite images
@@ -541,7 +541,11 @@ def test(region):
    # Look at tiles we alrady have to predict which to get at zoom+1
    for zoom in range(bbox_zoom_start-1,14):
       print("new zoom level:%s"%zoom)
-      
+
+      if is_done(zoom): 
+         print('skipping complete zoom level %s'%zoom)
+         continue      
+ 
       ocean, land, startx, starty, tot_in_box, done = get_accumulators(zoom)
 
       for ytile in range(bbox_limits[zoom]['minY'],bbox_limits[zoom]['maxY']+1):

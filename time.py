@@ -15,6 +15,19 @@ bbox_limits = {}
 REGION_INFO = os.path.join(MR_SSD,'../resources/regions.json')
 REGION_LIST = os.environ.get("REGION_LIST")
 
+def sec2hms(n):
+    days = n // (24 * 3600) 
+  
+    n = n % (24 * 3600) 
+    hours = n // 3600
+  
+    n %= 3600
+    minutes = n // 60
+  
+    n %= 60
+    seconds = n 
+    return '%s days, %s hours, %s minutes %s seconds'%(days,hours,minutes,seconds)
+
 def coordinates2WmtsTilesNumbers(lat_deg, lon_deg, zoom):
   lat_rad = math.radians(float(lat_deg))
   n = 2.0 ** zoom
@@ -47,7 +60,9 @@ def record_bbox_debug_info(regions):
          tiles = (xmax-xmin)*(ymax-ymin)
          bbox_limits[zoom] = { 'minX': xmin,'maxX':xmax,'minY':ymin,'maxY':ymax,                              'count':tot_tiles}
          tot_tiles += tiles
-      print region, tot_tiles, tot_tiles/spd, 'days', tot_tiles%spd/3660, 'hrs'
+      seconds = tot_tiles / 10
+      print region, tot_tiles, sec2hms(seconds)
+
    with open('./work/time_limits','w') as fp:
       fp.write(json.dumps(bbox_limits,indent=2))
 
