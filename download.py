@@ -18,25 +18,29 @@ import math
 import uuid
 import shutil
 import yaml
+from multiprocessing import Process
+import time
+
 
 # Download source of satellite imagry
 url =  "https://tiles.maps.eox.at/wmts?layer=s2cloudless-2018_3857&style=default&tilematrixset=g&Service=WMTS&Request=GetTile&Version=1.0.0&Format=image%2Fjpeg&TileMatrix={z}&TileCol={x}&TileRow={y}"
 src = object # the open url source
 # tiles smaller than this are probably ocean
-threshold = 800
+threshold = 2000
 
 # GLOBALS
 mbTiles = object
 args = object
 bounds = {}
 regions = {}
-bbox_zoom_start = 8
+bbox_zoom_start =10 
 bbox_limits = {}
 stdscr = object # cursors object for progress feedback
 config_fn = 'config.json'
 config = {}
+earth_around = 40075 # in KM
 
-class MBTiles(object):
+class MBTiles():
    def __init__(self, filename):
 
       self.conn = sqlite3.connect(filename)
@@ -188,9 +192,11 @@ class MBTiles(object):
          raise RuntimeError("Source data failure;%s"%e)
          
       if r.status == 200:
+         print('Sat data returned successfully')
          self.SetTile(zoomLevel, tileColumn, tileRow, r.data)
+         self.conn.commit()
       else:
-         print('status returned:%s'%r.status)
+         print('Sat data error, returned:%s'%r.status)
 
    def Commit(self):
       self.conn.commit()
@@ -248,13 +254,15 @@ class WMTS(object):
       url = url.replace('{x}',str(x))
       url = url.replace('{y}',str(y))
       #print(url)
-      return(self.http.request("GET",url))
+      return(self.http.request("GET",url,retries=10))
       
 def put_config():
+   global config
    with open(config_fn,'w') as cf:
      cf.write(json.dumps(config,indent=2))
  
 def get_config():
+   global config
    if not os.path.exists(config_fn):
       put_config()
 
@@ -273,6 +281,7 @@ def set_up_target_db(region):
    if not os.path.exists(dbpath):
       shutil.copyfile('./satellite.mbtiles',dbpath) 
    mbTiles = MBTiles(dbpath)
+   mbTiles.CheckSchema()
    mbTiles.get_bounds()
    config['last_db'] = dbpath
    put_config()
@@ -491,11 +500,19 @@ def get_accumulators(zoom):
 
 def fetch_quad_for(tileX, tileY, zoom):
    # get 4 tiles for zoom+1
-   mbTiles.DownloadTile(zoom+1,tileX*2,tileY*2)
-   mbTiles.DownloadTile(zoom+1,tileX*2+1,tileY*2)
-   mbTiles.DownloadTile(zoom+1,tileX*2,tileY*2+1)
-   mbTiles.DownloadTile(zoom+1,tileX*2+1,tileY*2+1)
-   mbTiles.Commit()
+   p1 = Process(target=mbTiles.DownloadTile, args=(zoom+1,tileX*2,tileY*2))
+   p1.start()
+   p2 = Process(target=mbTiles.DownloadTile, args=(zoom+1,tileX*2+1,tileY*2))
+   p2.start()
+   p3 = Process(target=mbTiles.DownloadTile, args=(zoom+1,tileX*2,tileY*2+1))
+   p3.start()
+   p4 = Process(target=mbTiles.DownloadTile, args=(zoom+1,tileX*2+1,tileY*2+1))
+   p4.start()
+   p1.join()
+   p2.join()
+   p3.join()
+   p4.join()
+
 
 def is_done(zoom):
    data = mbTiles.GetSatMetaData(zoom)
@@ -586,6 +603,7 @@ def test(region):
             else:
                ocean += 4
             sys.stdout.write('.')
+         print("ytile row completed:%s"%ytile)
          
       print('zoom %s completed'%zoom)
       mbTiles.SetSatMetaData(zoom,'done',True)
