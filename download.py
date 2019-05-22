@@ -18,7 +18,7 @@ import math
 import uuid
 import shutil
 import yaml
-from multiprocessing import Process
+from multiprocessing import Process, Lock
 import time
 
 
@@ -33,7 +33,7 @@ mbTiles = object
 args = object
 bounds = {}
 regions = {}
-bbox_zoom_start =10 
+bbox_zoom_start =8
 bbox_limits = {}
 stdscr = object # cursors object for progress feedback
 config_fn = 'config.json'
@@ -180,21 +180,23 @@ class MBTiles():
          return None
       return row[0][0]
 
-   def DownloadTile(self, zoomLevel, tileColumn, tileRow):
+   def DownloadTile(self, zoomLevel, tileColumn, tileRow, lock):
       # if the tile already exists, do nothing
       tile_id = self.TileExists(zoomLevel, tileColumn, tileRow)
       if tile_id:
          print('tile already exists -- skipping')
          return 
       try:
+         #wmts_row = int(2 ** zoomLevel - tileRow - 1)
          r = src.get(zoomLevel,tileColumn,tileRow)
       except Exception as e:
          raise RuntimeError("Source data failure;%s"%e)
          
       if r.status == 200:
-         print('Sat data returned successfully')
+         lock.acquire()
          self.SetTile(zoomLevel, tileColumn, tileRow, r.data)
          self.conn.commit()
+         lock.release()
       else:
          print('Sat data error, returned:%s'%r.status)
 
@@ -402,7 +404,7 @@ def view_tiles(stdscr):
    else:
       state['tileX'] = bounds[state['zoom']]['minX']
    if args.y:
-      #state['tileY'] = 2 ** zoom  - args.y - 1
+      state['tileY'] = 2 ** zoom  - args.y - 1
       state['tileY'] = args.y
    else:
       state['tileY'] = bounds[state['zoom']]['minY']
@@ -418,7 +420,7 @@ def view_tiles(stdscr):
          image = Image.open(StringIO.StringIO(raw))
          image.show()
       except:  
-         print('Tile not found. x:%s y:%s'%(state['tileX'],state['tileY']))
+         stdscr.addstr(1,0,'Tile not found. x:%s y:%s'%(state['tileX'],state['tileY']))
 
       n = numTiles(state['zoom'])
       ch = stdscr.getch()
@@ -480,7 +482,7 @@ def record_bbox_debug_info(region):
    with open('./work/bbox_limits','w') as fp:
       fp.write(json.dumps(bbox_limits,indent=2))
 
-def put_accumulators(zoom,ocean,land,count,done):
+def put_accumulators(zoom,ocean=0,land=0,count=0,done='False'):
    mbTiles.SetSatMetaData(zoom,'ocean',str(ocean))
    mbTiles.SetSatMetaData(zoom,'land',str(land))
    mbTiles.SetSatMetaData(zoom,'count',str(count))
@@ -500,13 +502,14 @@ def get_accumulators(zoom):
 
 def fetch_quad_for(tileX, tileY, zoom):
    # get 4 tiles for zoom+1
-   p1 = Process(target=mbTiles.DownloadTile, args=(zoom+1,tileX*2,tileY*2))
+   lock = Lock()
+   p1 = Process(target=mbTiles.DownloadTile, args=(zoom+1,tileX*2,tileY*2,lock))
    p1.start()
-   p2 = Process(target=mbTiles.DownloadTile, args=(zoom+1,tileX*2+1,tileY*2))
+   p2 = Process(target=mbTiles.DownloadTile, args=(zoom+1,tileX*2+1,tileY*2,lock))
    p2.start()
-   p3 = Process(target=mbTiles.DownloadTile, args=(zoom+1,tileX*2,tileY*2+1))
+   p3 = Process(target=mbTiles.DownloadTile, args=(zoom+1,tileX*2,tileY*2+1,lock))
    p3.start()
-   p4 = Process(target=mbTiles.DownloadTile, args=(zoom+1,tileX*2+1,tileY*2+1))
+   p4 = Process(target=mbTiles.DownloadTile, args=(zoom+1,tileX*2+1,tileY*2+1,lock))
    p4.start()
    p1.join()
    p2.join()
@@ -517,7 +520,7 @@ def fetch_quad_for(tileX, tileY, zoom):
 def is_done(zoom):
    data = mbTiles.GetSatMetaData(zoom)
    print('zoom:%s data:%s'%(zoom,data))
-   return data.get('done',False)
+   return bool(data.get('done',False))
   
 def download_region(region):
    global src # the opened url for satellite images
@@ -576,44 +579,43 @@ def test(region):
    except:
       print('failed to open source')
       sys.exit(1)
-
    # Look at tiles we alrady have to predict which to get at zoom+1
    for zoom in range(bbox_zoom_start-1,14):
       print("new zoom level:%s"%zoom)
 
-      if is_done(zoom): 
+      if is_done(zoom + 1): 
          print('skipping complete zoom level %s'%zoom)
          continue      
  
-      ocean, land, startx, starty, tot_in_box, done = get_accumulators(zoom)
+      ocean, land, startx, starty, count, done = get_accumulators(zoom)
+      start = start_pd = time.time()
+      land_pd = land
 
       for ytile in range(bbox_limits[zoom]['minY'],bbox_limits[zoom]['maxY']+1):
          mbTiles.SetSatMetaData(zoom,'tileY',str(ytile))
          for xtile in range(bbox_limits[zoom]['minX'],bbox_limits[zoom]['maxX']+1):
-            print('x:%s y:%s'%(xtile,ytile))
-            if xtile % 20:
+            if xtile % 20 == 0:
                mbTiles.SetSatMetaData(zoom,'tileX',str(xtile))
+               if start_pd != time.time():
+                  rate = (land - land_pd) / (time.time() - start_pd)
+                  start_pd = time.time()
+                  land_pd = land
+                  sys.stdout.write('\rRate:%s Ocean:%s Land:%s'%(rate,ocean,land,))
             try:
                raw = mbTiles.GetTile(zoom, xtile, ytile)
             except Exception as e:
-               print('GetTile returned %s'%str(e))
+               print('GetTile Exception. Zoom:%s x:%s y:%s Returned %s'%(zoom,xtile,ytile,str(e)))
             if len(raw) > threshold:
                land += 4
                fetch_quad_for(xtile, ytile, zoom)
             else:
                ocean += 4
             sys.stdout.write('.')
-         print("ytile row completed:%s"%ytile)
+         print("\rytile row completed:%s"%ytile)
          
       print('zoom %s completed'%zoom)
-      mbTiles.SetSatMetaData(zoom,'done',True)
-      #sys.exit()
-      # record/report results for this zoom level
-      count = mbTiles.CountTiles(zoom+1)
-      if count == ocean + land:
-          done = True
       put_accumulators(zoom,ocean,land,count,done)
-      #sys.exit() #for debugging
+   print('Total time:%s Total_tiles:%s'%(time.time()-start,land))
 
 def download(scr):
     global stdscr
