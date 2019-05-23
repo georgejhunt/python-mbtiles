@@ -30,6 +30,7 @@ bbox_limits = {} # set by sat_bbox_limits, read by download
 src = object
 config = {}
 config_fn = 'config.json'
+total_tiles = 0
 
 ATTRIBUTION = os.environ.get('METADATA_ATTRIBUTION', '<a href="http://openmaptiles.org/" target="_blank">&copy; OpenMapTiles</a> <a href="http://www.openstreetmap.org/about/" target="_blank">&copy; OpenStreetMap contributors</a>')
 VERSION = os.environ.get('METADATA_VERSION', '3.3')
@@ -38,7 +39,7 @@ work_dir = '/library/www/osm-vector/maplist/assets'
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Download WMTS tiles arount a point.")
-    parser.add_argument('-z',"--zoom", help="zoom level". type=int)
+    parser.add_argument('-z',"--zoom", help="zoom level", type=int)
     parser.add_argument("-m", "--mbtiles", help="mbtiles filename.")
     parser.add_argument("-n", "--name", help="Output filename.")
     parser.add_argument("--lat", help="Latitude degrees.",type=float)
@@ -90,6 +91,22 @@ class Extract(object):
             "filesize": os.path.getsize(extract_file)
         }
 
+def debug_one_tile():
+   if not args.x:
+      args.x = 2
+      args.y = 2
+      args.zoom = 2
+   
+   global src # the opened url for satellite images
+   try:
+      src = WMTS(url)
+   except:
+      print('failed to open source')
+      sys.exit(1)
+   response = src.get(args.zoom,args.x,args.y)
+   print(response.status) 
+   print(len(response.data))
+   
 def put_config():
    global config
    with open(config_fn,'w') as cf:
@@ -171,7 +188,6 @@ def sat_bbox(lat_deg,lon_deg,zoom,radius):
       for feature in data['features']:
          if feature['properties'].get('magic_number') == magic_number:
             magic_number_found = True
-
    features = [] 
    (west, south, east, north) = get_degree_extent(lat_deg,lon_deg,radius,zoom)
    print('west:%s, south:%s, east:%s, north:%s'%(west, south, east, north))
@@ -203,16 +219,9 @@ def download_tiles(src,lat_deg,lon_deg,zoom,radius):
             sys.exit(1)
          if r.status == 200:
             mbTiles.SetTile(zoom, tileX, tileY, r.data)
+            total_tiles += 1
          else:
             print('status returned:%s'%r.status)
-
-def report(lat_deg,lon_deg,zoom,radius):
-   tileX_min,tileX_max,tileY_min,tileY_max = bounds(lat_deg,lon_deg,radius,zoom)
-   print('minX:%s maxX:%s minY:%s maxY:%s'%bounds(lat_deg,lon_deg,radius,zoom))
-   count = ((tileX_max-tileX_min) * (tileY_max-tileY_min))
-   print('Tile count:%s Size:%s'%(count,human_readable(count * 5000)))
-   print('Time to download: %s minutes'%(count/48))
-   #print('or: %s hours'%(count/2880))
 
 def set_up_target_db(name='sentinel'):
    global mbTiles
@@ -230,6 +239,7 @@ def set_up_target_db(name='sentinel'):
    mbTiles.get_bounds()
    config['last_db'] = dbpath
    put_config()
+   print("Destination Database opened successfully:%s"%dbpath)
 
 def do_downloads():
    # Open a WMTS source
@@ -240,9 +250,11 @@ def do_downloads():
       print('failed to open source')
       sys.exit(1)
    set_up_target_db(args.name)
+   start = time.time()
    for zoom in range(args.zoom,14):
       print("new zoom level:%s"%zoom)
       download_tiles(src,args.lat,args.lon,zoom,args.radius)
+   print('Total time:%s Total_tiles:%s'%(time.time()-start,total_tiles))
 
 def main():
    global args
@@ -264,11 +276,6 @@ def main():
    if args.summarize:
       mbTiles.summarize()
       sys.exit(0)
-   if args.dir and args.dir != "":
-      if args.dir == ".":
-         args.dir = './output'
-      if not os.path.isdir(args.dir):
-         os.makedirs(args.dir)
    if not args.lon and not args.lat:
       args.lon = -122.14 
       args.lat = 37.46
@@ -289,6 +296,8 @@ def main():
    else:
       url =  "https://tiles.maps.eox.at/wmts?layer=s2cloudless-2018_3857&style=default&tilematrixset=g&Service=WMTS&Request=GetTile&Version=1.0.0&Format=image%2Fjpeg&TileMatrix={z}&TileCol={x}&TileRow={y}"
 
+   #debug_one_tile()
+   #sys.exit()
    do_downloads() 
 
 if __name__ == "__main__":
