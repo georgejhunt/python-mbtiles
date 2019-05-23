@@ -456,6 +456,7 @@ def coordinates2WmtsTilesNumbers(lat_deg, lon_deg, zoom):
   n = 2.0 ** zoom
   xtile = int((float(lon_deg) + 180.0) / 360.0 * n)
   ytile = int((1.0 - math.log(math.tan(lat_rad) + (1 / math.cos(lat_rad))) / math.pi) / 2.0 * n)
+  # the following would accomodate bottom left origin
   #ytile = int(n - ytile - 1)
   return (xtile, ytile)
 
