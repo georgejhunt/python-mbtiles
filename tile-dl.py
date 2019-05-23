@@ -18,6 +18,9 @@ import math
 from geojson import Feature, Point, FeatureCollection, Polygon
 import geojson
 from download import MBTiles, WMTS, fetch_quad_for
+import shutil
+import json
+
 
 # GLOBALS
 mbTiles = object
@@ -26,6 +29,7 @@ earth_circum = 40075.0 # in km
 bbox_limits = {} # set by sat_bbox_limits, read by download
 src = object
 config = {}
+config_fn = 'config.json'
 
 ATTRIBUTION = os.environ.get('METADATA_ATTRIBUTION', '<a href="http://openmaptiles.org/" target="_blank">&copy; OpenMapTiles</a> <a href="http://www.openstreetmap.org/about/" target="_blank">&copy; OpenStreetMap contributors</a>')
 VERSION = os.environ.get('METADATA_VERSION', '3.3')
@@ -34,13 +38,12 @@ work_dir = '/library/www/osm-vector/maplist/assets'
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Download WMTS tiles arount a point.")
-    parser.add_argument('-z',"--zoom", help="zoom level. (Default=8)", type=int)
+    parser.add_argument('-z',"--zoom", help="zoom level". type=int)
     parser.add_argument("-m", "--mbtiles", help="mbtiles filename.")
     parser.add_argument("-n", "--name", help="Output filename.")
     parser.add_argument("--lat", help="Latitude degrees.",type=float)
     parser.add_argument("--lon", help="Longitude degrees.",type=float)
     parser.add_argument("-r","--radius", help="Download within this radius(km).",type=float)
-    parser.add_argument("-d","--dir", help='Output to this directory (use "." for ./output/)')
     parser.add_argument("-g", "--get", help='get WMTS tiles from this URL(Default: Sentinel Cloudless).')
     parser.add_argument("-s", "--summarize", help="Data about each zoom level.",action="store_true")
     return parser.parse_args()
@@ -87,6 +90,19 @@ class Extract(object):
             "filesize": os.path.getsize(extract_file)
         }
 
+def put_config():
+   global config
+   with open(config_fn,'w') as cf:
+     cf.write(json.dumps(config,indent=2))
+ 
+def get_config():
+   global config
+   if not os.path.exists(config_fn):
+      put_config()
+
+   with open(config_fn,'r') as cf:
+     config = json.loads(cf.read())
+    
 def human_readable(num):
     # return 3 significant digits and unit specifier
     num = float(num)
@@ -136,22 +152,6 @@ def get_degree_extent(lat_deg,lon_deg,radius_km,zoom=13):
    # returns (west, south, east, north)
    return (north_west_point[1],south_east_point[0],south_east_point[1],north_west_point[0])
   
-def to_dir():
-   if args.dir != ".":
-      prefix = os.path.join(args.dir,'output')
-   else:
-      prefix = './output'
-   for zoom in range(5):
-      n = numTiles(zoom)
-      for row in range(n):
-         for col in range(n):
-            this_path = os.path.join(prefix,str(zoom),str(col),str(row)+'.jpeg')
-            if not os.path.isdir(os.path.dirname(this_path)):
-               os.makedirs(os.path.dirname(this_path))
-            raw = get_tile(zoom,col,row)
-            with open(this_path,'w') as fp:
-               fp.write(raw)
-
 
 def coordinates2WmtsTilesNumbers(lat_deg, lon_deg, zoom):
   lat_rad = math.radians(lat_deg)
@@ -160,31 +160,8 @@ def coordinates2WmtsTilesNumbers(lat_deg, lon_deg, zoom):
   ytile = int((1.0 - math.log(math.tan(lat_rad) + (1 / math.cos(lat_rad))) / math.pi) / 2.0 * n)
   return (xtile, ytile)
 
-def download_tiles(src,lat_deg,lon_deg,zoom,radius):
-   global mbTiles
-   tileX_min,tileX_max,tileY_min,tileY_max = bounds(lat_deg,lon_deg,radius,zoom)
-   for tileX in range(tileX_min,tileX_max+1):
-      for tileY in range(tileY_min,tileY_max+1):
-         print('tileX:%s tileY:%s'%(tileX,tileY))
-         try:
-            r = src.get(zoom,tileX,tileY)
-         except exception as e:
-            print(str(e))
-            sys.exit(1)
-         if r.status == 200:
-            mbTiles.SetTile(zoom, tileX, tileY, r.data)
-         else:
-            print('status returned:%s'%r.status)
-
-def report(lat_deg,lon_deg,zoom,radius):
-   tileX_min,tileX_max,tileY_min,tileY_max = bounds(lat_deg,lon_deg,radius,zoom)
-   print('minX:%s maxX:%s minY:%s maxY:%s'%bounds(lat_deg,lon_deg,radius,zoom))
-   count = ((tileX_max-tileX_min) * (tileY_max-tileY_min))
-   print('Tile count:%s Size:%s'%(count,human_readable(count * 5000)))
-   print('Time to download: %s minutes'%(count/48))
-   #print('or: %s hours'%(count/2880))
-
 def sat_bbox(lat_deg,lon_deg,zoom,radius):
+   # Adds a bounding box for the current location, radius
    magic_number = int(lat_deg * lon_deg * radius)
    bboxes = work_dir + "/bboxes.geojson"
    with open(bboxes,"r") as bounding_geojson:
@@ -213,27 +190,36 @@ def sat_bbox(lat_deg,lon_deg,zoom,radius):
       outstr = geojson.dumps(collection, indent=2)
       bounding_geojson.write(outstr)
 
-def numTiles(z):
-  return(pow(2,z))
+def download_tiles(src,lat_deg,lon_deg,zoom,radius):
+   global mbTiles
+   tileX_min,tileX_max,tileY_min,tileY_max = bounds(lat_deg,lon_deg,radius,zoom)
+   for tileX in range(tileX_min,tileX_max+1):
+      for tileY in range(tileY_min,tileY_max+1):
+         print('tileX:%s tileY:%s'%(tileX,tileY))
+         try:
+            r = src.get(zoom,tileX,tileY)
+         except exception as e:
+            print(str(e))
+            sys.exit(1)
+         if r.status == 200:
+            mbTiles.SetTile(zoom, tileX, tileY, r.data)
+         else:
+            print('status returned:%s'%r.status)
 
-def show_metadata():
-   metadata = mbTiles.GetAllMetaData()
-   for k in metadata:
-      print (k, metadata[k])
+def report(lat_deg,lon_deg,zoom,radius):
+   tileX_min,tileX_max,tileY_min,tileY_max = bounds(lat_deg,lon_deg,radius,zoom)
+   print('minX:%s maxX:%s minY:%s maxY:%s'%bounds(lat_deg,lon_deg,radius,zoom))
+   count = ((tileX_max-tileX_min) * (tileY_max-tileY_min))
+   print('Tile count:%s Size:%s'%(count,human_readable(count * 5000)))
+   print('Time to download: %s minutes'%(count/48))
+   #print('or: %s hours'%(count/2880))
 
-def get_tile(zoom,tilex,tiley):
-   try:
-      data = mbTiles.GetTile(zoom, tilex, tiley)
-   except RuntimeError as err:
-      print (err)
-   return(data)
-
-def set_up_target_db():
+def set_up_target_db(name='sentinel'):
    global mbTiles
    mbTiles = None
 
    # attach to the correct output database
-   dbname = 'sat-%s-sentinel-z0_13.mbtiles'%args.name
+   dbname = 'sat-%s-z0_13.mbtiles'%name
    if not os.path.isdir('./work'):
       os.mkdir('./work')
    dbpath = './work/%s'%dbname
@@ -253,7 +239,7 @@ def do_downloads():
    except:
       print('failed to open source')
       sys.exit(1)
-   # Look at tiles we alrady have to predict which to get at zoom+1
+   set_up_target_db(args.name)
    for zoom in range(args.zoom,14):
       print("new zoom level:%s"%zoom)
       download_tiles(src,args.lat,args.lon,zoom,args.radius)
@@ -268,8 +254,8 @@ def main():
       if config.get('last_db','') != '':
          args.mbtiles = config['last_db']
       else:
-         args.mbtiles = './work/sat-san_jose-sentinel-z0_13.mbtiles'
-   print('mbtiles filename:%s'%args.mbtiles)
+         args.mbtiles = './satellite.mbtiles'
+   print('mbtiles SOURCE filename:%s'%args.mbtiles)
    if os.path.isfile(args.mbtiles):
       mbTiles  = MBTiles(args.mbtiles)
       mbTiles.get_bounds()
@@ -283,7 +269,7 @@ def main():
          args.dir = './output'
       if not os.path.isdir(args.dir):
          os.makedirs(args.dir)
-   if args.lon == 0.0 and args.lat == 0.0:
+   if not args.lon and not args.lat:
       args.lon = -122.14 
       args.lat = 37.46
    if not args.zoom:
@@ -292,9 +278,11 @@ def main():
       args.radius = 15
    if not args.name:
       args.name = 'avni'
-   
-      print('inputs to tileXY: lat:%s lon:%s zoom:%s'%(args.lat,args.lon,args.zoom))
-      args.x,args.y = tools.tileXY(args.lat,args.lon,args.zoom)
+   if not args.lon and not args.lat:
+      args.lon = -122.14 
+      args.lat = 37.46
+   print('inputs to tileXY: lat:%s lon:%s zoom:%s'%(args.lat,args.lon,args.zoom))
+   args.x,args.y = tools.tileXY(args.lat,args.lon,args.zoom)
    if  args.get != None:
       print('get specified')
       url = args.get
