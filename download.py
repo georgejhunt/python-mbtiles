@@ -144,7 +144,7 @@ class MBTiles():
       tile_id = self.TileExists(zoomLevel, tileColumn, tileRow)
       if tile_id: 
          operation = 'update images'
-         self.c.execute("UPDATE images SET tile_data=? WHERE tile_id = ?;", (data, tilee_id))
+         self.c.execute("UPDATE images SET tile_data=? WHERE tile_id = ?;", (data, tile_id))
       else: # this is not an update
          tile_id = uuid.uuid4().hex
          self.c.execute("INSERT INTO images ( tile_data,tile_id) VALUES ( ?, ?);", (data,unicode(tile_id)))
@@ -411,16 +411,17 @@ def view_tiles(stdscr):
    while 1:
       try:
          raw = mbTiles.GetTile(state['zoom'],state['tileX'],state['tileY'])
+         proc = subprocess.Popen(['killall','display'])
+         proc.communicate()
          stdscr.clear()
          stdscr.addstr(0,0,'zoom:%s lon:%s lat:%s'%(state['zoom'],state['tileX'],state['tileY']))
          stdscr.addstr(0,40,'Size of tile:%s'%len(raw))
          stdscr.refresh() 
-         proc = subprocess.Popen(['killall','display'])
-         proc.communicate()
          image = Image.open(StringIO.StringIO(raw))
          image.show()
       except:  
          stdscr.addstr(1,0,'Tile not found. x:%s y:%s'%(state['tileX'],state['tileY']))
+         stdscr.refresh() 
 
       n = numTiles(state['zoom'])
       ch = stdscr.getch()
@@ -432,7 +433,7 @@ def view_tiles(stdscr):
          if not state['tileY'] == bounds[state['zoom']]['minY']:
             state['tileY'] -= 1
       elif ch == curses.KEY_RIGHT:
-         if not state['tileX'] == bounds[state['zoom']]['maxX']-1:
+         if not state['tileX'] == bounds[state['zoom']]['maxX']:
             state['tileX'] += 1
       elif ch == curses.KEY_LEFT:
          if not state['tileX'] == bounds[state['zoom']]['minX']:

@@ -219,13 +219,13 @@ def key_parse(stdscr):
          if not state['tileY'] == bounds[state['zoom']]['minY']:
             state['tileY'] -= 1
       elif ch == curses.KEY_RIGHT:
-         if not state['tileX'] == bounds[state['zoom']]['maxX']-1:
+         if not state['tileX'] == bounds[state['zoom']]['maxX']:
             state['tileX'] += 1
       elif ch == curses.KEY_LEFT:
          if not state['tileX'] == bounds[state['zoom']]['minX']:
             state['tileX'] -= 1
       elif ch == curses.KEY_DOWN:
-         if not state['tileY'] == bounds[state['zoom']]['minY']-1:
+         if not state['tileY'] == bounds[state['zoom']]['maxY']:
             state['tileY'] += 1
       elif ch == ord('='):
          if not state['zoom'] == 13:

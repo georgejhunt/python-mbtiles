@@ -20,6 +20,9 @@ import geojson
 from download import MBTiles, WMTS, fetch_quad_for
 import shutil
 import json
+import time
+import StringIO
+from PIL import Image
 
 
 # GLOBALS
@@ -41,6 +44,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Download WMTS tiles arount a point.")
     parser.add_argument('-z',"--zoom", help="zoom level", type=int)
     parser.add_argument("-m", "--mbtiles", help="mbtiles filename.")
+    parser.add_argument("-v", "--verify", help="verify mbtiles.",action='store_true')
+    parser.add_argument("-f", "--fix", help="fix invalid tiles.",action='store_true')
     parser.add_argument("-n", "--name", help="Output filename.")
     parser.add_argument("--lat", help="Latitude degrees.",type=float)
     parser.add_argument("--lon", help="Longitude degrees.",type=float)
@@ -93,8 +98,8 @@ class Extract(object):
 
 def debug_one_tile():
    if not args.x:
-      args.x = 2
-      args.y = 2
+      args.x = 3
+      args.y = 0
       args.zoom = 2
    
    global src # the opened url for satellite images
@@ -106,6 +111,9 @@ def debug_one_tile():
    response = src.get(args.zoom,args.x,args.y)
    print(response.status) 
    print(len(response.data))
+   #print response.data
+      
+      
    
 def put_config():
    global config
@@ -206,22 +214,70 @@ def sat_bbox(lat_deg,lon_deg,zoom,radius):
       outstr = geojson.dumps(collection, indent=2)
       bounding_geojson.write(outstr)
 
+def scan_verify():
+   global mbTiles
+   global url
+   global src # the opened url for satellite images
+   if args.fix:
+      # Open a WMTS source
+      try:
+         src = WMTS(url)
+      except:
+         print('failed to open WMTS source in scan_verify')
+         sys.exit(1)
+   bad = ok = empty = html = 0
+   mbTiles = MBTiles(args.mbtiles)
+   for zoom in sorted(bounds.keys()):
+      for tileY in range(bounds[zoom]['minY'],bounds[zoom]['maxY']):
+         print("New Y:%s on zoom:%s"%(tileY,zoom))
+         for tileX in range(bounds[zoom]['minX'],bounds[zoom]['maxX']):
+            raw = mbTiles.GetTile(zoom, tileX, tileY)
+            try:
+               image = Image.open(StringIO.StringIO(raw))
+               ok += 1
+            except Exception as e:
+               bad += 1
+               if len(raw) != 0:
+                  line = b'raw'.decode('utf-8')
+                  if line.find("DOCTYPE"):
+                     print('html')
+                     html +=1
+                     if args.fix:
+                        replace_tile(src,zoom,tileX,tileY)
+               else:
+                  empty += 1
+                  print('Image exception:%s on zoom:%s X:%s Y:%s'%(e,zoom,tileX,tileY))
+      print 'empty',empty
+      if zoom == 3: break
+   print 'bad',bad,'ok',ok, 'empty',empty,'html',html
+   
+def replace_tile(src,zoom,tileX,tileY):
+   global url
+   global total_tiles
+   try:
+      r = src.get(zoom,tileX,tileY)
+   except exception as e:
+      print(str(e))
+      sys.exit(1)
+   if r.status == 200:
+      raw = r.data
+      line = b'raw'.decode('utf-8')
+      if line.find("DOCTYPE"):
+         print('still getting html from sentinel cloudless')
+      else:
+         mbTiles.SetTile(zoom, tileX, tileY, r.data)
+         total_tiles += 1
+   else:
+      print('status returned:%s'%r.status)
+
 def download_tiles(src,lat_deg,lon_deg,zoom,radius):
    global mbTiles
+   global total_tiles
    tileX_min,tileX_max,tileY_min,tileY_max = bounds(lat_deg,lon_deg,radius,zoom)
    for tileX in range(tileX_min,tileX_max+1):
       for tileY in range(tileY_min,tileY_max+1):
          print('tileX:%s tileY:%s'%(tileX,tileY))
-         try:
-            r = src.get(zoom,tileX,tileY)
-         except exception as e:
-            print(str(e))
-            sys.exit(1)
-         if r.status == 200:
-            mbTiles.SetTile(zoom, tileX, tileY, r.data)
-            total_tiles += 1
-         else:
-            print('status returned:%s'%r.status)
+         replace_tile(src,zoom,tileX,tileY)
 
 def set_up_target_db(name='sentinel'):
    global mbTiles
@@ -260,6 +316,7 @@ def main():
    global args
    global mbTiles
    global url
+   global bounds
    args = parse_args()
    # Default to standard source
    if not args.mbtiles:
@@ -270,11 +327,17 @@ def main():
    print('mbtiles SOURCE filename:%s'%args.mbtiles)
    if os.path.isfile(args.mbtiles):
       mbTiles  = MBTiles(args.mbtiles)
-      mbTiles.get_bounds()
-   #if args.mbtiles:
-   # mbTiles =  MBTiles(args.mbtiles)
+      bounds = mbTiles.get_bounds()
+   if  args.get != None:
+      print('get specified')
+      url = args.get
+   else:
+      url =  "https://tiles.maps.eox.at/wmts?layer=s2cloudless-2018_3857&style=default&tilematrixset=g&Service=WMTS&Request=GetTile&Version=1.0.0&Format=image%2Fjpeg&TileMatrix={z}&TileCol={x}&TileRow={y}"
    if args.summarize:
       mbTiles.summarize()
+      sys.exit(0)
+   if args.verify:
+      scan_verify()
       sys.exit(0)
    if not args.lon and not args.lat:
       args.lon = -122.14 
@@ -290,11 +353,6 @@ def main():
       args.lat = 37.46
    print('inputs to tileXY: lat:%s lon:%s zoom:%s'%(args.lat,args.lon,args.zoom))
    args.x,args.y = tools.tileXY(args.lat,args.lon,args.zoom)
-   if  args.get != None:
-      print('get specified')
-      url = args.get
-   else:
-      url =  "https://tiles.maps.eox.at/wmts?layer=s2cloudless-2018_3857&style=default&tilematrixset=g&Service=WMTS&Request=GetTile&Version=1.0.0&Format=image%2Fjpeg&TileMatrix={z}&TileCol={x}&TileRow={y}"
 
    #debug_one_tile()
    #sys.exit()
