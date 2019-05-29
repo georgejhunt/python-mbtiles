@@ -1,5 +1,5 @@
 #!/usr/bin/env python2
-# read mbtiles images to viewer
+# read mbtiles images to viewer -- SUPPLANTED BY download.py
 # started from https://github.com/TimSC/pyMbTiles/blob/master/MBTiles.py
 
 import sqlite3

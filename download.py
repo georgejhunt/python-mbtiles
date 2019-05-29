@@ -153,8 +153,9 @@ class MBTiles():
          operation = 'insert into map'
          self.c.execute("INSERT INTO map (zoom_level, tile_column, tile_row, tile_id) VALUES (?, ?, ?, ?);", 
             (zoomLevel, tileColumn, tileRow, tile_id))
-         if self.c.rowcount != 1:
-            raise RuntimeError("Failure %s "%operation)
+      if self.c.rowcount != 1:
+         raise RuntimeError("Failure %s RowCount:%s"%(operation,self.c.rowcount))
+      self.conn.commit()
    
 
    def DeleteTile(self, zoomLevel, tileColumn, tileRow):
@@ -173,12 +174,12 @@ class MBTiles():
       if not self.schemaReady:
          self.CheckSchema()
 
-      sql = 'select tile_data from tiles where zoom_level = ? and tile_column = ? and tile_row = ?'
+      sql = 'select tile_id from map where zoom_level = ? and tile_column = ? and tile_row = ?'
       self.c.execute(sql,(zoomLevel, tileColumn, tileRow))
       row = self.c.fetchall()
       if len(row) == 0:
          return None
-      return row[0][0]
+      return str(row[0][0])
 
    def DownloadTile(self, zoomLevel, tileColumn, tileRow, lock):
       # if the tile already exists, do nothing
@@ -252,11 +253,12 @@ class WMTS(object):
            ca_certs=certifi.where())
 
    def get(self,z,x,y):
-      url = self.template.replace('{z}',str(z))
-      url = url.replace('{x}',str(x))
-      url = url.replace('{y}',str(y))
-      #print(url)
-      return(self.http.request("GET",url,retries=10))
+      srcurl = self.template.replace('{z}',str(z))
+      srcurl = srcurl.replace('{x}',str(x))
+      srcurl = srcurl.replace('{y}',str(y))
+      #print(srcurl)
+      resp = (self.http.request("GET",srcurl,retries=10))
+      return(resp)
       
 def put_config():
    global config

@@ -23,7 +23,7 @@ import json
 import time
 import StringIO
 from PIL import Image
-
+import pdb; pdb.set_trace()
 
 # GLOBALS
 mbTiles = object
@@ -225,31 +225,39 @@ def scan_verify():
       except:
          print('failed to open WMTS source in scan_verify')
          sys.exit(1)
-   bad = ok = empty = html = 0
+   replaced = bad = ok = empty = html = unfixable = 0
    mbTiles = MBTiles(args.mbtiles)
+   print('Opening database %s'%args.mbtiles)
    for zoom in sorted(bounds.keys()):
       for tileY in range(bounds[zoom]['minY'],bounds[zoom]['maxY']):
-         print("New Y:%s on zoom:%s"%(tileY,zoom))
+         #print("New Y:%s on zoom:%s"%(tileY,zoom))
          for tileX in range(bounds[zoom]['minX'],bounds[zoom]['maxX']):
-            raw = mbTiles.GetTile(zoom, tileX, tileY)
-            try:
-               image = Image.open(StringIO.StringIO(raw))
-               ok += 1
-            except Exception as e:
-               bad += 1
-               if len(raw) != 0:
-                  line = b'raw'.decode('utf-8')
-                  if line.find("DOCTYPE"):
-                     print('html')
+            num_tries = 5 if args.fix else 1
+            for trial in range(num_tries):
+               raw = mbTiles.GetTile(zoom, tileX, tileY)
+               try:
+                  image = Image.open(StringIO.StringIO(raw))
+                  ok += 1
+                  break
+               except Exception as e:
+                  bad += 1
+                  if trial == num_tries -1 and args.fix:
+                     #print 'bad',bad,'ok',ok, 'empty',empty,'html',html
+                     print('Failed to correct zoom:%s tileX:%s tileY:%s after %s tries'%(zoom,tileX,tileY,num_tries))
+                     #sys.exit(1)
+                     unfixable += 1
+                  line = bytearray(raw)
+                  if line.find("DOCTYPE") != -1:
+                     #print('html')
                      html +=1
                      if args.fix:
+                        #print('Replacing zoom:%s tileX:%s tileY:%s'%(zoom,tileX,tileY))
+                        replaced += 1
                         replace_tile(src,zoom,tileX,tileY)
-               else:
-                  empty += 1
-                  print('Image exception:%s on zoom:%s X:%s Y:%s'%(e,zoom,tileX,tileY))
-      print 'empty',empty
-      if zoom == 3: break
-   print 'bad',bad,'ok',ok, 'empty',empty,'html',html
+                     continue
+      print 'bad',bad,'ok',ok, 'empty',empty,'html',html, 'unfixable',unfixable,'zoom',zoom,'replaced',replaced
+      #if zoom == 3: break
+   print 'bad',bad,'ok',ok, 'empty',empty,'html',html, 'unfixable',unfixable
    
 def replace_tile(src,zoom,tileX,tileY):
    global url
@@ -261,8 +269,8 @@ def replace_tile(src,zoom,tileX,tileY):
       sys.exit(1)
    if r.status == 200:
       raw = r.data
-      line = b'raw'.decode('utf-8')
-      if line.find("DOCTYPE"):
+      line = bytearray(raw)
+      if line.find("DOCTYPE") != -1:
          print('still getting html from sentinel cloudless')
       else:
          mbTiles.SetTile(zoom, tileX, tileY, r.data)
