@@ -1,4 +1,5 @@
 #!/usr/bin/env python2
+# Exploration of tiles surrounding a lat/lon
 # -*- coding: UTF-8 -*-
 # notes to set up this exploration
 #  -- the symbolic link satellite.mbtiles is set to source
@@ -263,7 +264,8 @@ def scan_verify():
       print 'bad',bad,'ok',ok, 'empty',empty,'html',html, 'unfixable',unfixable,'zoom',zoom,'replaced',replaced
       if zoom == 5: break
    print 'bad',bad,'ok',ok, 'empty',empty,'html',html, 'unfixable',unfixable
-   bad_ref.close()
+   if args.fix:
+      bad_ref.close()
    
 def replace_tile(src,zoom,tileX,tileY):
    global total_tiles

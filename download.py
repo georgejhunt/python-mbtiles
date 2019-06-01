@@ -1,5 +1,9 @@
 #!/usr/bin/env python2
 # Download satellite imagess from Sentinel Cloudless
+# -*- coding: UTF-8 -*-
+# notes to set up this exploration
+#  -- the symbolic link satellite.mbtiles is set to source
+#  -- output placed in ./work/sat_<name>.mbtiles
 
 # help from https://github.com/TimSC/pyMbTiles/blob/master/MBTiles.py
 
@@ -17,7 +21,6 @@ import json
 import math
 import uuid
 import shutil
-import yaml
 from multiprocessing import Process, Lock
 import time
 
@@ -42,7 +45,6 @@ earth_around = 40075 # in KM
 
 class MBTiles():
    def __init__(self, filename):
-
       self.conn = sqlite3.connect(filename)
       self.conn.row_factory = sqlite3.Row
       self.conn.text_factory = str
@@ -273,25 +275,27 @@ def get_config():
    with open(config_fn,'r') as cf:
      config = json.loads(cf.read())
     
-def set_up_target_db(region):
-   global mbTiles
+def set_up_target_db():
+   # create output target, use default input source
+   global mbTiles,config
+   # destroying object closes any open database
    mbTiles = None
 
    # attach to the correct output database
-   dbname = 'sat-%s-sentinel-z0_13.mbtiles'%region
+   dbname = 'in_process.mbtiles'%region
    if not os.path.isdir('./work'):
       os.mkdir('./work')
    dbpath = './work/%s'%dbname
    if not os.path.exists(dbpath):
-      shutil.copyfile('./satellite.mbtiles',dbpath) 
+      shutil.copyfile(args.mbtiles,dbpath) 
    mbTiles = MBTiles(dbpath)
    mbTiles.CheckSchema()
    mbTiles.get_bounds()
-   config['last_db'] = dbpath
+   config['last_dest'] = dbpath
    put_config()
 
-   
 def to_dir():
+   # write out file tree from mbtiles database
    if args.dir != ".":
       prefix = os.path.join(args.dir,'work')
    else:
@@ -357,7 +361,7 @@ def parse_args():
     parser.add_argument("-m", "--mbtiles", help="mbtiles filename.")
     parser.add_argument("-s", "--summarize", help="Data about each zoom level.",action="store_true")
     parser.add_argument("-l", "--list", help="List tile sizes.",action="store_true")
-    parser.add_argument("-v", "--debug", help="Get one tile from source.",action="store_true")
+    parser.add_argument("-o", "--onetile", help="Get one tile from source.",action="store_true")
     parser.add_argument("--lat", help="Latitude degrees.",type=float)
     parser.add_argument("--lon", help="Longitude degrees.",type=float)
     parser.add_argument("-d","--dir", help='Output to this directory (use "." for ./work/)')
@@ -396,6 +400,12 @@ def view_tiles(stdscr):
    # permits viewing of individual image tiles (-x,-y,-y parameters)
    global args
    global mbTiles
+   global src # the opened url for satellite images
+   try:
+      src = WMTS(url)
+   except:
+      print('failed to open source')
+      sys.exit(1)
    if args.zoom:
       zoom = args.zoom
    else:
@@ -410,9 +420,18 @@ def view_tiles(stdscr):
       state['tileY'] = args.y
    else:
       state['tileY'] = bounds[state['zoom']]['minY']
+   state['source'] = 'tile'
    while 1:
       try:
-         raw = mbTiles.GetTile(state['zoom'],state['tileX'],state['tileY'])
+         if state['source'] == 'tile':
+            raw = mbTiles.GetTile(state['zoom'],state['tileX'],state['tileY'])
+         else:
+            resp = src.get(state['zoom'],state['tileX'],state['tileY'])
+            if resp.status == 200:
+              raw = resp.data
+            else:
+               stdscr.addstr(1,0,"failed to fetch SAT data from URL")
+               continue
          proc = subprocess.Popen(['killall','display'])
          proc.communicate()
          stdscr.clear()
@@ -421,8 +440,8 @@ def view_tiles(stdscr):
          stdscr.refresh() 
          image = Image.open(StringIO.StringIO(raw))
          image.show()
-      except:  
-         stdscr.addstr(1,0,'Tile not found. x:%s y:%s'%(state['tileX'],state['tileY']))
+      except Exception as e:  
+         stdscr.addstr(1,0,'Exception:%s. x:%s y:%s'%(e,state['tileX'],state['tileY']))
          stdscr.refresh() 
 
       n = numTiles(state['zoom'])
@@ -443,6 +462,10 @@ def view_tiles(stdscr):
       elif ch == curses.KEY_DOWN:
          if not state['tileY'] == bounds[state['zoom']]['minY']-1:
             state['tileY'] += 1
+      elif ch == ord('s'):
+            state['source'] = 'sat'
+      elif ch == ord('t'):
+            state['source'] = 'tile'
       elif ch == ord('='):
          if not state['zoom'] == 13:
             state['tileX'] *= 2
@@ -572,7 +595,7 @@ def download_region(region):
 
 def test(region):
 
-   set_up_target_db(region)
+   set_up_target_db()
 
    record_bbox_debug_info(region)
 
@@ -654,28 +677,27 @@ def main():
       os.mkdir('./work')
    get_config()
    args = parse_args()
-   get_regions()
-   if not args.mbtiles:
-      if config.get('last_db','') != '':
-         args.mbtiles = config['last_db']
-      else:
-         args.mbtiles = './work/sat-san_jose-sentinel-z0_13.mbtiles'
+   get_regions() # read the json region into global dictionary
 
-   print('mbtiles filename:%s'%args.mbtiles)
-   if os.path.isfile(args.mbtiles):
-
-      mbTiles  = MBTiles(args.mbtiles)
-      mbTiles.get_bounds()
+   if not args.mbtiles: #remember current project in/out setup
+      if config.get('last_src','') != '':
+         args.mbtiles = config['last_src']
+      else:  # fall back to symbolic link
+         args.mbtiles = './satellite.mbtiles'
+   mbTiles  = MBTiles(args.mbtiles)
+   mbTiles.get_bounds()
+   print('SOURCE mbtiles filename:%s'%args.mbtiles)
 
    if args.summarize:
       mbTiles.summarize()
       sys.exit(0)
-   if args.debug:
+   if args.onetile:
       debug_one_tile()
       sys.exit(0)
    if args.list:
       list_tile_sizes()
       sys.exit(0)
+   # selecting -z zoom but not xy
    if args.zoom and not args.y:
       curses.wrapper(view_tiles)
       sys.exit(0)
