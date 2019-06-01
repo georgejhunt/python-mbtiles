@@ -230,11 +230,11 @@ class MBTiles():
      for row in rows:
          print('%s %s %s %s %s %s %s'%(row[0],row[1],row[2],row[3],row[4],\
               row[5], (row[2]-row[1]+1) * ( row[4]-row[3]+1)))
-         mbTiles.SetSatMetaData(row[0],'minX',row[1])
-         mbTiles.SetSatMetaData(row[0],'maxX',row[2])
-         mbTiles.SetSatMetaData(row[0],'minY',row[3])
-         mbTiles.SetSatMetaData(row[0],'maxY',row[4])
-         mbTiles.SetSatMetaData(row[0],'count',row[5])
+         self.SetSatMetaData(row[0],'minX',row[1])
+         self.SetSatMetaData(row[0],'maxX',row[2])
+         self.SetSatMetaData(row[0],'minY',row[3])
+         self.SetSatMetaData(row[0],'maxY',row[4])
+         self.SetSatMetaData(row[0],'count',row[5])
          
          
   
