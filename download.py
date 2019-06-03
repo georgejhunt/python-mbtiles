@@ -145,16 +145,27 @@ class MBTiles():
 
       tile_id = self.TileExists(zoomLevel, tileColumn, tileRow)
       if tile_id: 
+         tile_id = uuid.uuid4().hex
          operation = 'update images'
-         self.c.execute("UPDATE images SET tile_data=? WHERE tile_id = ?;", (data, tile_id))
+         self.c.execute("DELETE FROM images  WHERE tile_id = ?;", ([tile_id]))
+         self.c.execute("INSERT INTO images (tile_data,tile_id) VALUES ( ?, ?);", (sqlite3.Binary(data),tile_id))
+         if self.c.rowcount != 1:
+            raise RuntimeError("Failure %s RowCount:%s"%(operation,self.c.rowcount))
+         self.c.execute("""UPDATE map SET tile_id=? where zoom_level = ? AND 
+               tile_column = ? AND tile_row = ?;""", 
+            (tile_id, zoomLevel, tileColumn, tileRow))
+         if self.c.rowcount != 1:
+            raise RuntimeError("Failure %s RowCount:%s"%(operation,self.c.rowcount))
+         self.conn.commit()
+         return
       else: # this is not an update
          tile_id = uuid.uuid4().hex
-         self.c.execute("INSERT INTO images ( tile_data,tile_id) VALUES ( ?, ?);", (data,unicode(tile_id)))
+         self.c.execute("INSERT INTO images ( tile_data,tile_id) VALUES ( ?, ?);", (sqlite3.Binary(data),tile_id))
          if self.c.rowcount != 1:
             raise RuntimeError("Insert image failure")
          operation = 'insert into map'
          self.c.execute("INSERT INTO map (zoom_level, tile_column, tile_row, tile_id) VALUES (?, ?, ?, ?);", 
-            (zoomLevel, tileColumn, tileRow, tile_id))
+            (zoomLevel, tileColumn, tileRow, tile_idi))
       if self.c.rowcount != 1:
          raise RuntimeError("Failure %s RowCount:%s"%(operation,self.c.rowcount))
       self.conn.commit()
@@ -255,10 +266,11 @@ class WMTS(object):
            ca_certs=certifi.where())
 
    def get(self,z,x,y):
-      srcurl = self.template.replace('{z}',str(z))
+      srcurl = "%s"%self.template
+      srcurl = srcurl.replace('{z}',str(z))
       srcurl = srcurl.replace('{x}',str(x))
       srcurl = srcurl.replace('{y}',str(y))
-      #print(srcurl)
+      print(srcurl[-50:])
       resp = (self.http.request("GET",srcurl,retries=10))
       return(resp)
       
@@ -383,6 +395,37 @@ def get_tile(zoom,tilex,tiley):
       print (err)
    return(data)
 
+def replace_tile(src,zoom,tileX,tileY):
+   global total_tiles
+   try:
+      r = src.get(zoom,tileX,tileY)
+   except Exception as e:
+      print(str(e))
+      sys.exit(1)
+   if r.status == 200:
+      raw = r.data
+      line = bytearray(raw)
+      if line.find("DOCTYPE") != -1:
+         print('still getting html from sentinel cloudless')
+         return False
+      else:
+         try:
+            image = Image.open(StringIO.StringIO(raw))
+            #image.show(StringIO.StringIO(raw))
+         except Exception as e:
+            print('exception:%s'%e)
+            sys.exit()
+         #raw_input("PRESS ENTER")
+         mbTiles.SetTile(zoom, tileX, tileY, r.data)
+         returned = mbTiles.GetTile(zoom, tileX, tileY)
+         if returned != r.data:
+            print('read verify in replace_tile failed')
+            return False
+         return True
+   else:
+      print('get url in replace_tile returned:%s'%r.status)
+      return False
+
 def get_regions():
    global regions
    # error out if environment is missing
@@ -466,6 +509,8 @@ def view_tiles(stdscr):
             state['source'] = 'sat'
       elif ch == ord('t'):
             state['source'] = 'tile'
+      elif ch == ord('p'):
+         replace_tile(src,state['zoom'],state['tileX'],state['tileY'])
       elif ch == ord('='):
          if not state['zoom'] == 13:
             state['tileX'] *= 2

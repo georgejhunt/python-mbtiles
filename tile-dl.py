@@ -24,7 +24,7 @@ import json
 import time
 import StringIO
 from PIL import Image
-#import pdb; pdb.set_trace()
+#import ipdb; ipdb.set_trace()
 
 # GLOBALS
 mbTiles = object
@@ -240,20 +240,26 @@ def scan_verify():
    mbTiles = MBTiles(args.mbtiles)
    print('Opening database %s'%args.mbtiles)
    for zoom in sorted(bounds.keys()):
-      for tileY in range(bounds[zoom]['minY'],bounds[zoom]['maxY']):
+      for tileY in range(bounds[zoom]['minY'],bounds[zoom]['maxY'] + 1):
          #print("New Y:%s on zoom:%s"%(tileY,zoom))
-         for tileX in range(bounds[zoom]['minX'],bounds[zoom]['maxX']):
+         for tileX in range(bounds[zoom]['minX'],bounds[zoom]['maxX'] + 1):
+               #print('tileX:%s'%tileX)
+               replace = False
                raw = mbTiles.GetTile(zoom, tileX, tileY)
                try:
                   image = Image.open(StringIO.StringIO(raw))
                   ok += 1
-                  break
+                  if len(raw) < 800: 
+                     replace=True
+                  else:
+                     continue
                except Exception as e:
                   bad += 1
+                  replace = True
                   line = bytearray(raw)
                   if line.find("DOCTYPE") != -1:
                      html +=1
-                     if args.fix:
+                  if args.fix and replace:
                         success = replace_tile(src,zoom,tileX,tileY)
                         if success:
                            bad_ref.write('%s,%s,%s\n'%(zoom,tileX,tileY))
@@ -262,7 +268,7 @@ def scan_verify():
                            bad_ref.write('%s,%s,%s\n'%(zoom,tileX,tileY))
                            unfixable += 1
       print 'bad',bad,'ok',ok, 'empty',empty,'html',html, 'unfixable',unfixable,'zoom',zoom,'replaced',replaced
-      if zoom == 5: break
+      #if zoom == 4: sys.exit()
    print 'bad',bad,'ok',ok, 'empty',empty,'html',html, 'unfixable',unfixable
    if args.fix:
       bad_ref.close()
@@ -281,10 +287,18 @@ def replace_tile(src,zoom,tileX,tileY):
          #print('still getting html from sentinel cloudless')
          return False
       else:
+         try:
+            image = Image.open(StringIO.StringIO(raw))
+            #image.show(StringIO.StringIO(raw))
+         except Exception as e:
+            print('exception:%s'%e)
+            sys.exit()
+         #raw_input("PRESS ENTER")
          mbTiles.SetTile(zoom, tileX, tileY, r.data)
          return True
    else:
       print('status returned:%s'%r.status)
+      return False
 
 def download_tiles(src,lat_deg,lon_deg,zoom,radius):
    global mbTiles
@@ -304,7 +318,8 @@ def set_up_target_db(name='sentinel'):
    if not os.path.isdir('./work'):
       os.mkdir('./work')
    dbpath = './work/%s'%dbname
-   if not os.path.exists(dbpath):
+   #if not os.path.exists(dbpath):
+   if True:
       shutil.copyfile('./satellite.mbtiles',dbpath) 
    mbTiles = MBTiles(dbpath)
    mbTiles.CheckSchema()
