@@ -1,4 +1,5 @@
 #!/usr/bin/env python2
+# Exploration of tiles surrounding a lat/lon
 # -*- coding: UTF-8 -*-
 # notes to set up this exploration
 #  -- the symbolic link satellite.mbtiles is set to source
@@ -23,7 +24,7 @@ import json
 import time
 import StringIO
 from PIL import Image
-import pdb; pdb.set_trace()
+#import ipdb; ipdb.set_trace()
 
 # GLOBALS
 mbTiles = object
@@ -34,6 +35,7 @@ src = object
 config = {}
 config_fn = 'config.json'
 total_tiles = 0
+bad_ref = 0
 
 ATTRIBUTION = os.environ.get('METADATA_ATTRIBUTION', '<a href="http://openmaptiles.org/" target="_blank">&copy; OpenMapTiles</a> <a href="http://www.openstreetmap.org/about/" target="_blank">&copy; OpenStreetMap contributors</a>')
 VERSION = os.environ.get('METADATA_VERSION', '3.3')
@@ -214,69 +216,89 @@ def sat_bbox(lat_deg,lon_deg,zoom,radius):
       outstr = geojson.dumps(collection, indent=2)
       bounding_geojson.write(outstr)
 
-def scan_verify():
+def create_clone():
    global mbTiles
-   global url
+   global bad_ref
+   global src
+   # Open a WMTS source
+   try:
+      src = WMTS(url)
+   except:
+      print('failed to open WMTS source in scan_verify')
+      sys.exit(1)
+   
+   # copy the source into a work directory, then do in place substitution
+   set_up_target_db('fix_try')
+   bad_ref = open('./work/bad_tiles','w')
+
+
+def scan_verify():
    global src # the opened url for satellite images
    if args.fix:
-      # Open a WMTS source
-      try:
-         src = WMTS(url)
-      except:
-         print('failed to open WMTS source in scan_verify')
-         sys.exit(1)
+      create_clone()
    replaced = bad = ok = empty = html = unfixable = 0
    mbTiles = MBTiles(args.mbtiles)
    print('Opening database %s'%args.mbtiles)
    for zoom in sorted(bounds.keys()):
-      for tileY in range(bounds[zoom]['minY'],bounds[zoom]['maxY']):
+      for tileY in range(bounds[zoom]['minY'],bounds[zoom]['maxY'] + 1):
          #print("New Y:%s on zoom:%s"%(tileY,zoom))
-         for tileX in range(bounds[zoom]['minX'],bounds[zoom]['maxX']):
-            num_tries = 5 if args.fix else 1
-            for trial in range(num_tries):
+         for tileX in range(bounds[zoom]['minX'],bounds[zoom]['maxX'] + 1):
+               #print('tileX:%s'%tileX)
+               replace = False
                raw = mbTiles.GetTile(zoom, tileX, tileY)
                try:
                   image = Image.open(StringIO.StringIO(raw))
                   ok += 1
-                  break
+                  if len(raw) < 800: 
+                     replace=True
+                  else:
+                     continue
                except Exception as e:
                   bad += 1
-                  if trial == num_tries -1 and args.fix:
-                     #print 'bad',bad,'ok',ok, 'empty',empty,'html',html
-                     print('Failed to correct zoom:%s tileX:%s tileY:%s after %s tries'%(zoom,tileX,tileY,num_tries))
-                     #sys.exit(1)
-                     unfixable += 1
+                  replace = True
                   line = bytearray(raw)
                   if line.find("DOCTYPE") != -1:
-                     #print('html')
                      html +=1
-                     if args.fix:
-                        #print('Replacing zoom:%s tileX:%s tileY:%s'%(zoom,tileX,tileY))
-                        replaced += 1
-                        replace_tile(src,zoom,tileX,tileY)
-                     continue
+                  if args.fix and replace:
+                        success = replace_tile(src,zoom,tileX,tileY)
+                        if success:
+                           bad_ref.write('%s,%s,%s\n'%(zoom,tileX,tileY))
+                           replaced += 1
+                        else:
+                           bad_ref.write('%s,%s,%s\n'%(zoom,tileX,tileY))
+                           unfixable += 1
       print 'bad',bad,'ok',ok, 'empty',empty,'html',html, 'unfixable',unfixable,'zoom',zoom,'replaced',replaced
-      #if zoom == 3: break
+      #if zoom == 4: sys.exit()
    print 'bad',bad,'ok',ok, 'empty',empty,'html',html, 'unfixable',unfixable
+   if args.fix:
+      bad_ref.close()
    
 def replace_tile(src,zoom,tileX,tileY):
-   global url
    global total_tiles
    try:
       r = src.get(zoom,tileX,tileY)
-   except exception as e:
+   except Exception as e:
       print(str(e))
       sys.exit(1)
    if r.status == 200:
       raw = r.data
       line = bytearray(raw)
       if line.find("DOCTYPE") != -1:
-         print('still getting html from sentinel cloudless')
+         #print('still getting html from sentinel cloudless')
+         return False
       else:
+         try:
+            image = Image.open(StringIO.StringIO(raw))
+            #image.show(StringIO.StringIO(raw))
+         except Exception as e:
+            print('exception:%s'%e)
+            sys.exit()
+         #raw_input("PRESS ENTER")
          mbTiles.SetTile(zoom, tileX, tileY, r.data)
-         total_tiles += 1
+         return True
    else:
       print('status returned:%s'%r.status)
+      return False
 
 def download_tiles(src,lat_deg,lon_deg,zoom,radius):
    global mbTiles
@@ -296,7 +318,8 @@ def set_up_target_db(name='sentinel'):
    if not os.path.isdir('./work'):
       os.mkdir('./work')
    dbpath = './work/%s'%dbname
-   if not os.path.exists(dbpath):
+   #if not os.path.exists(dbpath):
+   if True:
       shutil.copyfile('./satellite.mbtiles',dbpath) 
    mbTiles = MBTiles(dbpath)
    mbTiles.CheckSchema()
@@ -338,6 +361,9 @@ def main():
    if os.path.isfile(args.mbtiles):
       mbTiles  = MBTiles(args.mbtiles)
       bounds = mbTiles.get_bounds()
+   else:
+      print('Failed to open %s -- Quitting'%args.mbtiles)
+      sys.exit()
    if  args.get != None:
       print('get specified')
       url = args.get
