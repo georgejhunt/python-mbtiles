@@ -357,6 +357,8 @@ def main():
    global bounds
    args = parse_args()
    # Default to standard source
+   if not os.path.isdir('./work'):
+      os.mkdir('./work')
    if not args.mbtiles:
       if config.get('last_db','') != '':
          args.mbtiles = config['last_db']
