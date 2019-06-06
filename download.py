@@ -270,7 +270,7 @@ class WMTS(object):
       srcurl = srcurl.replace('{z}',str(z))
       srcurl = srcurl.replace('{x}',str(x))
       srcurl = srcurl.replace('{y}',str(y))
-      print(srcurl[-50:])
+      #print(srcurl[-50:])
       resp = (self.http.request("GET",srcurl,retries=10))
       return(resp)
       

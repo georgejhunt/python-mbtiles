@@ -24,7 +24,7 @@ import json
 import time
 import StringIO
 from PIL import Image
-#import ipdb; ipdb.set_trace()
+import ipdb; ipdb.set_trace()
 
 # GLOBALS
 mbTiles = object
@@ -240,6 +240,8 @@ def scan_verify():
    mbTiles = MBTiles(args.mbtiles)
    print('Opening database %s'%args.mbtiles)
    for zoom in sorted(bounds.keys()):
+      #if zoom == 5: sys.exit()
+      bad = ok = empty = html = 0
       for tileY in range(bounds[zoom]['minY'],bounds[zoom]['maxY'] + 1):
          #print("New Y:%s on zoom:%s"%(tileY,zoom))
          for tileX in range(bounds[zoom]['minX'],bounds[zoom]['maxX'] + 1):
@@ -267,8 +269,9 @@ def scan_verify():
                         else:
                            bad_ref.write('%s,%s,%s\n'%(zoom,tileX,tileY))
                            unfixable += 1
+                        if tileY % 20 == 0:
+                           print('replaced:%s  ok:%s'%(replaced,ok))
       print 'bad',bad,'ok',ok, 'empty',empty,'html',html, 'unfixable',unfixable,'zoom',zoom,'replaced',replaced
-      #if zoom == 4: sys.exit()
    print 'bad',bad,'ok',ok, 'empty',empty,'html',html, 'unfixable',unfixable
    if args.fix:
       bad_ref.close()
@@ -284,7 +287,7 @@ def replace_tile(src,zoom,tileX,tileY):
       raw = r.data
       line = bytearray(raw)
       if line.find("DOCTYPE") != -1:
-         #print('still getting html from sentinel cloudless')
+         print('still getting html from sentinel cloudless')
          return False
       else:
          try:
@@ -295,9 +298,13 @@ def replace_tile(src,zoom,tileX,tileY):
             sys.exit()
          #raw_input("PRESS ENTER")
          mbTiles.SetTile(zoom, tileX, tileY, r.data)
+         returned = mbTiles.GetTile(zoom, tileX, tileY)
+         if bytearray(returned) != r.data:
+            print('read verify in replace_tile failed')
+            return False
          return True
    else:
-      print('status returned:%s'%r.status)
+      print('get url in replace_tile returned:%s'%r.status)
       return False
 
 def download_tiles(src,lat_deg,lon_deg,zoom,radius):
