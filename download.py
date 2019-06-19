@@ -262,7 +262,6 @@ class MBTiles():
       self.c.executescript(script)
 
    def copy_zoom(self,zoom,src):
-      print src
       sql = 'ATTACH DATABASE "%s" as src'%src
       self.c.execute(sql)
       sql = 'INSERT INTO map SELECT * from src.map where src.map.zoom_level=?'
@@ -597,7 +596,7 @@ def put_accumulators(zoom,ocean=0,land=0,count=0,done='False'):
 
 def get_accumulators(zoom):
    data = mbTiles.GetSatMetaData(zoom)
-   print str(data)
+   #print str(data)
    return (\
       int(str(data.get('ocean',0))),\
       int(str(data.get('land',0))),\
@@ -689,7 +688,7 @@ def extend_region():
       print('failed to open source')
       sys.exit(1)
    # Look at tiles we alrady have to predict which to get at zoom+1
-   for zoom in range(bbox_zoom_start-1,14):
+   for zoom in range(bbox_zoom_start-1,13):
       print("new zoom level:%s"%zoom)
 
       if is_done(zoom + 1): 
@@ -703,7 +702,7 @@ def extend_region():
       for ytile in range(bbox_limits[zoom]['minY'],bbox_limits[zoom]['maxY']+1):
          mbTiles.SetSatMetaData(zoom,'tileY',str(ytile))
          for xtile in range(bbox_limits[zoom]['minX'],bbox_limits[zoom]['maxX']+1):
-            if xtile % 20 == 0:
+            if xtile % 10 == 0:
                mbTiles.SetSatMetaData(zoom,'tileX',str(xtile))
                if start_pd != time.time():
                   rate = (land - land_pd) / (time.time() - start_pd)
