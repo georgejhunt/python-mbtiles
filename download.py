@@ -36,7 +36,7 @@ mbTiles = object
 args = object
 bounds = {}
 regions = {}
-bbox_zoom_start =8
+bbox_zoom_start = 9
 bbox_limits = {}
 stdscr = object # cursors object for progress feedback
 config_fn = 'config.json'
@@ -165,7 +165,7 @@ class MBTiles():
             raise RuntimeError("Insert image failure")
          operation = 'insert into map'
          self.c.execute("INSERT INTO map (zoom_level, tile_column, tile_row, tile_id) VALUES (?, ?, ?, ?);", 
-            (zoomLevel, tileColumn, tileRow, tile_idi))
+            (zoomLevel, tileColumn, tileRow, tile_id))
       if self.c.rowcount != 1:
          raise RuntimeError("Failure %s RowCount:%s"%(operation,self.c.rowcount))
       self.conn.commit()
@@ -258,6 +258,20 @@ class MBTiles():
          num += 1 
       return num
 
+   def execute_script(self,script):
+      self.c.executescript(script)
+
+   def copy_zoom(self,zoom,src):
+      print src
+      sql = 'ATTACH DATABASE "%s" as src'%src
+      self.c.execute(sql)
+      sql = 'INSERT INTO map SELECT * from src.map where src.map.zoom_level=?'
+      self.c.execute(sql,[zoom])
+      sql = 'INSERT OR IGNORE INTO images SELECT src.images.tile_data, src.images.tile_id from src.images JOIN src.map ON src.map.tile_id = src.images.tile_id where map.zoom_level=?'
+      self.c.execute(sql,[zoom])
+      sql = 'DETACH DATABASE src'
+      self.c.execute(sql)
+
 class WMTS(object):
 
    def __init__(self, template):
@@ -294,13 +308,32 @@ def set_up_target_db():
    mbTiles = None
 
    # attach to the correct output database
-   dbname = 'in_process.mbtiles'%region
-   if not os.path.isdir('./work'):
-      os.mkdir('./work')
    dbpath = './work/%s'%dbname
    if not os.path.exists(dbpath):
       shutil.copyfile(args.mbtiles,dbpath) 
    mbTiles = MBTiles(dbpath)
+   mbTiles.CheckSchema()
+   mbTiles.get_bounds()
+   config['last_dest'] = dbpath
+   put_config()
+
+def set_up_new_target_db():
+   # create output target, use default input source
+   global mbTiles,config
+   # destroying object closes any open database
+   mbTiles = None
+
+   # attach to the correct output database
+   dbname = 'sat_z%s-z13_%s.mbtiles'%(bbox_zoom_start,args.region)
+   dbpath = './work/%s'%dbname
+   if not os.path.exists(dbpath):
+      mbTiles = MBTiles(dbpath)
+      with open('tilelive.schema','r') as fp:
+         script = fp.read()
+      mbTiles.execute_script(script)
+      mbTiles.copy_zoom(str(bbox_zoom_start-1),args.mbtiles)
+   else:
+      mbTiles = MBTiles(dbpath)
    mbTiles.CheckSchema()
    mbTiles.get_bounds()
    config['last_dest'] = dbpath
@@ -371,8 +404,10 @@ def parse_args():
     parser.add_argument("-x",  help="tileX", type=int)
     parser.add_argument("-y",  help="tileY", type=int)
     parser.add_argument("-m", "--mbtiles", help="mbtiles filename.")
+    parser.add_argument("-r", "--region", help="Region to operate upon.")
     parser.add_argument("-s", "--summarize", help="Data about each zoom level.",action="store_true")
     parser.add_argument("-l", "--list", help="List tile sizes.",action="store_true")
+    parser.add_argument("-e", "--extend", help="Get z10-13.",action="store_true")
     parser.add_argument("-o", "--onetile", help="Get one tile from source.",action="store_true")
     parser.add_argument("--lat", help="Latitude degrees.",type=float)
     parser.add_argument("--lon", help="Longitude degrees.",type=float)
@@ -641,8 +676,10 @@ def download_region(region):
 def test(region):
 
    set_up_target_db()
+   extend_region()
 
-   record_bbox_debug_info(region)
+def extend_region():
+   record_bbox_debug_info(args.region)
 
    # Open a WMTS source
    global src # the opened url for satellite images
@@ -689,6 +726,10 @@ def test(region):
       put_accumulators(zoom,ocean,land,count,done)
    print('Total time:%s Total_tiles:%s'%(time.time()-start,land))
 
+def make_sat_extension():
+   set_up_new_target_db()
+   extend_region()
+
 def download(scr):
     global stdscr
     stdscr = scr
@@ -728,7 +769,8 @@ def main():
       if config.get('last_src','') != '':
          args.mbtiles = config['last_src']
       else:  # fall back to symbolic link
-         args.mbtiles = './satellite.mbtiles'
+         args.mbtiles = '%s/satellite.mbtiles'%os.getcwd()
+   print args.mbtiles
    mbTiles  = MBTiles(args.mbtiles)
    mbTiles.get_bounds()
    print('SOURCE mbtiles filename:%s'%args.mbtiles)
@@ -757,11 +799,18 @@ def main():
    if args.dir != None:
       to_dir()
       sys.exit(0)
+   if args.region == None:
+      args.region = 'san_jose'
+   if args.extend != None:
+      make_sat_extension()
+      sys.exit(0)
    test('san_jose')
    sys.exit()
    curses.wrapper(download) 
    
 
 if __name__ == "__main__":
+   if not os.path.isdir('./work'):
+      os.mkdir('./work')
     # Run the main routine
    main()
