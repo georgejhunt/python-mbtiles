@@ -22,6 +22,7 @@ import math
 import uuid
 import shutil
 from multiprocessing import Process, Lock
+from extract import Extract
 import time
 
 
@@ -36,7 +37,7 @@ mbTiles = object
 args = object
 bounds = {}
 regions = {}
-bbox_zoom_start = 9
+bbox_zoom_start = 10 
 bbox_limits = {}
 stdscr = object # cursors object for progress feedback
 config_fn = 'config.json'
@@ -267,6 +268,16 @@ class MBTiles():
       sql = 'INSERT INTO map SELECT * from src.map where src.map.zoom_level=?'
       self.c.execute(sql,[zoom])
       sql = 'INSERT OR IGNORE INTO images SELECT src.images.tile_data, src.images.tile_id from src.images JOIN src.map ON src.map.tile_id = src.images.tile_id where map.zoom_level=?'
+      self.c.execute(sql,[zoom])
+      sql = 'DETACH DATABASE src'
+      self.c.execute(sql)
+
+   def copy_mbtile(self,src):
+      sql = 'ATTACH DATABASE "%s" as src'%src
+      self.c.execute(sql)
+      sql = 'INSERT INTO map SELECT * from src.map where true'
+      self.c.execute(sql,[zoom])
+      sql = 'INSERT OR IGNORE INTO images SELECT src.images.tile_data, src.images.tile_id from src.images JOIN src.map ON src.map.tile_id = src.images.tile_id where true'
       self.c.execute(sql,[zoom])
       sql = 'DETACH DATABASE src'
       self.c.execute(sql)
