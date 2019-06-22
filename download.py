@@ -22,7 +22,6 @@ import math
 import uuid
 import shutil
 from multiprocessing import Process, Lock
-from extract import Extract
 import time
 
 
@@ -43,6 +42,7 @@ stdscr = object # cursors object for progress feedback
 config_fn = 'config.json'
 config = {}
 earth_around = 40075 # in KM
+tile_metadata = {}
 
 class MBTiles():
    def __init__(self, filename):
@@ -199,7 +199,7 @@ class MBTiles():
       # if the tile already exists, do nothing
       tile_id = self.TileExists(zoomLevel, tileColumn, tileRow)
       if tile_id:
-         print('tile already exists -- skipping')
+         #print('tile already exists -- skipping')
          return 
       try:
          #wmts_row = int(2 ** zoomLevel - tileRow - 1)
@@ -298,6 +298,47 @@ class WMTS(object):
       resp = (self.http.request("GET",srcurl,retries=10))
       return(resp)
       
+class Extract(object):
+
+    def __init__(self, extract, top, left, bottom, right,
+                 min_zoom=0, max_zoom=14, center_zoom=10):
+        self.extract = extract
+
+        self.min_lon = left
+        self.min_lat = bottom
+        self.max_lon = right
+        self.max_lat = top
+
+        self.min_zoom = min_zoom
+        self.max_zoom = max_zoom
+        self.center_zoom = center_zoom
+
+    def bounds(self):
+        return '%s,%s,%s,%s'%(self.min_lon, self.min_lat,
+                                    self.max_lon, self.max_lat)
+
+    def center(self):
+        center_lon = (self.min_lon + self.max_lon) / 2.0
+        center_lat = (self.min_lat + self.max_lat) / 2.0
+        return '%s,%s,%s'.format(center_lon, center_lat, self.center_zoom)
+
+    def metadata(self, extract_file):
+        return {
+            "type": os.environ.get('METADATA_TYPE', 'baselayer'),
+            "attribution": ATTRIBUTION,
+            "version": VERSION,
+            "minzoom": self.min_zoom,
+            "maxzoom": self.max_zoom,
+            "name": os.environ.get('METADATA_NAME', 'OpenMapTiles'),
+            "id": os.environ.get('METADATA_ID', 'openmaptiles'),
+            "description": os.environ.get('METADATA_DESC', "Extract from http://openmaptiles.org"),
+            "bounds": self.bounds(),
+            "center": self.center(),
+            "basename": os.path.basename(extract_file),
+            "filesize": os.path.getsize(extract_file)
+        }
+
+
 def put_config():
    global config
    with open(config_fn,'w') as cf:
@@ -311,13 +352,14 @@ def get_config():
    with open(config_fn,'r') as cf:
      config = json.loads(cf.read())
     
-def set_up_target_db():
+def set_up_target_db(region):
    # create output target, use default input source
    global mbTiles,config
    # destroying object closes any open database
    mbTiles = None
 
    # attach to the correct output database
+   dbname = 'sat_z%s-z13_%s.mbtiles'%(bbox_zoom_start,args.region)
    dbpath = './work/%s'%dbname
    if not os.path.exists(dbpath):
       shutil.copyfile(args.mbtiles,dbpath) 
@@ -410,19 +452,20 @@ def debug_one_tile():
    
 def parse_args():
     parser = argparse.ArgumentParser(description="Display mbtile image.")
-    parser.add_argument('-z',"--zoom", help="zoom level. (Default=2)", type=int)
-    parser.add_argument("-x",  help="tileX", type=int)
-    parser.add_argument("-y",  help="tileY", type=int)
-    parser.add_argument("-m", "--mbtiles", help="mbtiles filename.")
-    parser.add_argument("-r", "--region", help="Region to operate upon.")
-    parser.add_argument("-s", "--summarize", help="Data about each zoom level.",action="store_true")
-    parser.add_argument("-l", "--list", help="List tile sizes.",action="store_true")
+    parser.add_argument("-c","--copy", help='Copy -m as src and extend.',action='store_true')
+    parser.add_argument("-d","--dir", help='Output to this directory (use "." for ./work/)')
     parser.add_argument("-e", "--extend", help="Get z10-13.",action="store_true")
+    parser.add_argument("-g", "--get", help='get WMTS tiles from this URL(of "." for Sentinel Cloudless).')
+    parser.add_argument("-l", "--list", help="List tile sizes.",action="store_true")
+    parser.add_argument("-m", "--mbtiles", help="mbtiles filename.")
     parser.add_argument("-o", "--onetile", help="Get one tile from source.",action="store_true")
     parser.add_argument("--lat", help="Latitude degrees.",type=float)
     parser.add_argument("--lon", help="Longitude degrees.",type=float)
-    parser.add_argument("-d","--dir", help='Output to this directory (use "." for ./work/)')
-    parser.add_argument("-g", "--get", help='get WMTS tiles from this URL(of "." for Sentinel Cloudless).')
+    parser.add_argument("-r", "--region", help="Region to operate upon.")
+    parser.add_argument("-s", "--summarize", help="Data about each zoom level.",action="store_true")
+    parser.add_argument("-x",  help="tileX", type=int)
+    parser.add_argument("-y",  help="tileY", type=int)
+    parser.add_argument('-z',"--zoom", help="zoom level. (Default=2)", type=int)
     return parser.parse_args()
 
 def numTiles(z):
@@ -484,6 +527,18 @@ def get_regions():
          print("regions.json parse error")
          sys.exit(1)
    
+def set_metadata(region):
+   global extract
+   extract = Extract('%s_z0-z%s'%(prefix,13),
+        left=regions[region]['west'],
+        right=regions[region]['east'],
+        top=regions[region]['north'],
+        bottom=regions[region]['south'],
+        center_zoom=regions[region]['zoom'],
+        min_zoom=10,
+        max_zoom=13
+       )
+
 def view_tiles(stdscr):
    # permits viewing of individual image tiles (-x,-y,-y parameters)
    global args
@@ -686,9 +741,9 @@ def download_region(region):
 def test(region):
 
    set_up_target_db()
-   extend_region()
+   extend_region(region)
 
-def extend_region():
+def extend_region(region):
    record_bbox_debug_info(args.region)
 
    # Open a WMTS source
@@ -736,9 +791,13 @@ def extend_region():
       put_accumulators(zoom,ocean,land,count,done)
    print('Total time:%s Total_tiles:%s'%(time.time()-start,land))
 
-def make_sat_extension():
-   set_up_new_target_db()
-   extend_region()
+def make_sat_extension(region):
+   set_up_new_target_db(region)
+   extend_region(region)
+
+def copy_and_extend(region):
+   set_up_target_db(region)
+   extend_region(region)
 
 def download(scr):
     global stdscr
@@ -812,7 +871,10 @@ def main():
    if args.region == None:
       args.region = 'san_jose'
    if args.extend != None:
-      make_sat_extension()
+      if args.copy:
+         copy_and_extend(args.region)
+      else:
+         make_sat_extension(args.region)
       sys.exit(0)
    test('san_jose')
    sys.exit()
