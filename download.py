@@ -27,6 +27,8 @@ import time
 
 # Download source of satellite imagry
 url =  "https://tiles.maps.eox.at/wmts?layer=s2cloudless-2018_3857&style=default&tilematrixset=g&Service=WMTS&Request=GetTile&Version=1.0.0&Format=image%2Fjpeg&TileMatrix={z}&TileCol={x}&TileRow={y}"
+ATTRIBUTION = os.environ.get('METADATA_ATTRIBUTION', '<a href="http://openmaptiles.org/" target="_blank">&copy; OpenMapTiles</a> <a href="http://www.openstreetmap.org/about/" target="_blank">&copy; OpenStreetMap contributors</a>')
+VERSION = os.environ.get('METADATA_VERSION', '3.3')
 src = object # the open url source
 # tiles smaller than this are probably ocean
 threshold = 2000
@@ -282,6 +284,15 @@ class MBTiles():
       sql = 'DETACH DATABASE src'
       self.c.execute(sql)
 
+   def delete_zoom(self,zoom):
+      sql = 'DELETE FROM images  JOIN map ON map.tile_id = images.tile_id where map.zoom_level=?'
+      self.c.execute(sql,[zoom])
+      sql = 'DELETE FROM map where zoom_level=?'
+      self.c.execute(sql,[zoom])
+      sql = "vacuum"
+      self.c.execute(sql)
+      self.Commit()
+
 class WMTS(object):
 
    def __init__(self, template):
@@ -318,11 +329,11 @@ class Extract(object):
                                     self.max_lon, self.max_lat)
 
     def center(self):
-        center_lon = (self.min_lon + self.max_lon) / 2.0
-        center_lat = (self.min_lat + self.max_lat) / 2.0
-        return '%s,%s,%s'.format(center_lon, center_lat, self.center_zoom)
+        center_lon = (float(self.min_lon) + float(self.max_lon)) / 2.0
+        center_lat = (float(self.min_lat) + float(self.max_lat))/ 2.0
+        return '%s,%s,%s'%(center_lon, center_lat, self.center_zoom)
 
-    def metadata(self, extract_file):
+    def metadata(self):
         return {
             "type": os.environ.get('METADATA_TYPE', 'baselayer'),
             "attribution": ATTRIBUTION,
@@ -334,8 +345,8 @@ class Extract(object):
             "description": os.environ.get('METADATA_DESC', "Extract from http://openmaptiles.org"),
             "bounds": self.bounds(),
             "center": self.center(),
-            "basename": os.path.basename(extract_file),
-            "filesize": os.path.getsize(extract_file)
+            "basename": os.path.basename(self.extract),
+            "filesize": os.path.getsize(self.extract)
         }
 
 
@@ -354,7 +365,7 @@ def get_config():
     
 def set_up_target_db(region):
    # create output target, use default input source
-   global mbTiles,config
+   global mbTiles,config,dbpath
    # destroying object closes any open database
    mbTiles = None
 
@@ -528,16 +539,19 @@ def get_regions():
          sys.exit(1)
    
 def set_metadata(region):
-   global extract
-   extract = Extract('%s_z0-z%s'%(prefix,13),
+   global extract,dbpath
+   extract = Extract(dbpath,
         left=regions[region]['west'],
         right=regions[region]['east'],
         top=regions[region]['north'],
         bottom=regions[region]['south'],
         center_zoom=regions[region]['zoom'],
         min_zoom=10,
-        max_zoom=13
-       )
+        max_zoom=13)
+   outdict = extract.metadata()
+   for key in outdict.keys():
+      mbTiles.SetMetaData(key,outdict[key])
+      # print(key,outdict[key])
 
 def view_tiles(stdscr):
    # permits viewing of individual image tiles (-x,-y,-y parameters)
@@ -790,6 +804,7 @@ def extend_region(region):
       print('zoom %s completed'%zoom)
       put_accumulators(zoom,ocean,land,count,done)
    print('Total time:%s Total_tiles:%s'%(time.time()-start,land))
+   set_metadata(region)
 
 def make_sat_extension(region):
    set_up_new_target_db(region)
