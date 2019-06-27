@@ -1,9 +1,11 @@
 #!/usr/bin/env python2
-# Download satellite imagess from Sentinel Cloudless
 # -*- coding: UTF-8 -*-
+# Download satellite imagess from Sentinel Cloudless
 # notes to set up this exploration
 #  -- the symbolic link satellite.mbtiles is set to source
 #  -- output placed in ./work/sat_<name>.mbtiles
+#  -- just a -z option throw app into viewer mode
+#  -- Use -h for the available options
 
 # help from https://github.com/TimSC/pyMbTiles/blob/master/MBTiles.py
 
@@ -199,7 +201,9 @@ class MBTiles():
 
    def DownloadTile(self, zoomLevel, tileColumn, tileRow, lock):
       # if the tile already exists, do nothing
+      lock.acquire()
       tile_id = self.TileExists(zoomLevel, tileColumn, tileRow)
+      lock.release()
       if tile_id:
          #print('tile already exists -- skipping')
          return 
@@ -244,6 +248,7 @@ class MBTiles():
      rows = self.c.fetchall()
      print('Zoom Levels Found:%s'%len(rows))
      for row in rows:
+       if row[2] != None and row[1] != None and row[3] != None and row[4] != None:
          print('%s %s %s %s %s %s %s'%(row[0],row[1],row[2],row[3],row[4],\
               row[5], (row[2]-row[1]+1) * ( row[4]-row[3]+1)))
          self.SetSatMetaData(row[0],'minX',row[1])
@@ -285,7 +290,7 @@ class MBTiles():
       self.c.execute(sql)
 
    def delete_zoom(self,zoom):
-      sql = 'DELETE FROM images  JOIN map ON map.tile_id = images.tile_id where map.zoom_level=?'
+      sql = 'DELETE FROM images where tile_id in (SELECT tile_id from map WHERE map.zoom_level=?)'
       self.c.execute(sql,[zoom])
       sql = 'DELETE FROM map where zoom_level=?'
       self.c.execute(sql,[zoom])
@@ -380,20 +385,22 @@ def set_up_target_db(region):
    config['last_dest'] = dbpath
    put_config()
 
-def set_up_new_target_db():
+def set_up_new_target_db(region):
    # create output target, use default input source
    global mbTiles,config
    # destroying object closes any open database
    mbTiles = None
 
    # attach to the correct output database
-   dbname = 'sat_z%s-z13_%s.mbtiles'%(bbox_zoom_start,args.region)
+   dbname = 'sat_z%s-z13_%s.mbtiles'%(bbox_zoom_start,region)
    dbpath = './work/%s'%dbname
    if not os.path.exists(dbpath):
       mbTiles = MBTiles(dbpath)
+      print('Initializing schema for %s'%dbpath)
       with open('tilelive.schema','r') as fp:
          script = fp.read()
       mbTiles.execute_script(script)
+      print('Copying zoom %s from %s to %s'%(bbox_zoom_start-1,args.mbtiles,dbpath))
       mbTiles.copy_zoom(str(bbox_zoom_start-1),args.mbtiles)
    else:
       mbTiles = MBTiles(dbpath)
@@ -636,6 +643,19 @@ def view_tiles(stdscr):
             state['tileY'] /= 2
             state['zoom'] -= 1
 
+def sec2hms(n):
+    days = n // (24 * 3600) 
+  
+    n = n % (24 * 3600) 
+    hours = n // 3600
+  
+    n %= 3600
+    minutes = n // 60
+  
+    n %= 60
+    seconds = n 
+    return '%s days, %s hours, %s minutes %s seconds'%(days,hours,minutes,seconds)
+
 def coordinates2WmtsTilesNumbers(lat_deg, lon_deg, zoom):
   lat_rad = math.radians(float(lat_deg))
   n = 2.0 ** zoom
@@ -705,7 +725,7 @@ def fetch_quad_for(tileX, tileY, zoom):
 
 def is_done(zoom):
    data = mbTiles.GetSatMetaData(zoom)
-   print('zoom:%s data:%s'%(zoom,data))
+   #print('zoom:%s data:%s'%(zoom,data))
    return bool(data.get('done',False))
   
 def download_region(region):
@@ -768,6 +788,7 @@ def extend_region(region):
       print('failed to open source')
       sys.exit(1)
    # Look at tiles we alrady have to predict which to get at zoom+1
+   start = start_pd = time.time()
    for zoom in range(bbox_zoom_start-1,13):
       print("new zoom level:%s"%zoom)
 
@@ -776,34 +797,41 @@ def extend_region(region):
          continue      
  
       ocean, land, startx, starty, count, done = get_accumulators(zoom)
-      start = start_pd = time.time()
+      start_pd = time.time()
       land_pd = land
 
       for ytile in range(bbox_limits[zoom]['minY'],bbox_limits[zoom]['maxY']+1):
          mbTiles.SetSatMetaData(zoom,'tileY',str(ytile))
          for xtile in range(bbox_limits[zoom]['minX'],bbox_limits[zoom]['maxX']+1):
-            if xtile % 10 == 0:
+            if xtile % 20 == 0:
                mbTiles.SetSatMetaData(zoom,'tileX',str(xtile))
                if start_pd != time.time():
                   rate = (land - land_pd) / (time.time() - start_pd)
                   start_pd = time.time()
                   land_pd = land
-                  sys.stdout.write('\rRate:%s Ocean:%s Land:%s'%(rate,ocean,land,))
-            try:
-               raw = mbTiles.GetTile(zoom, xtile, ytile)
-            except Exception as e:
-               print('GetTile Exception. Zoom:%s x:%s y:%s Returned %s'%(zoom,xtile,ytile,str(e)))
-            if len(raw) > threshold:
-               land += 4
-               fetch_quad_for(xtile, ytile, zoom)
+                  sys.stdout.write('\nRate:%s Ocean:%s Land:%s'%(rate,ocean,land,))
+            if mbTiles.TileExists(zoom,xtile,ytile):
+               try:
+                  raw = mbTiles.GetTile(zoom, xtile, ytile)
+               except Exception as e:
+                  print('GetTile Exception. Zoom:%s x:%s y:%s Returned %s'%(zoom,xtile,ytile,str(e)))
+               if len(raw) > threshold:
+                  land += 4
+                  fetch_quad_for(xtile, ytile, zoom)
+               else:
+                  ocean += 4
             else:
                ocean += 4
             sys.stdout.write('.')
-         print("\rytile row completed:%s"%ytile)
+         print("ytile row completed:%s."%ytile)
+         print('Total time:%s Total_tiles:%s'%(time.time()-start,land))
          
       print('zoom %s completed'%zoom)
+      done = True
       put_accumulators(zoom,ocean,land,count,done)
+   ocean, land, startx, starty, count, done = get_accumulators(zoom)
    print('Total time:%s Total_tiles:%s'%(time.time()-start,land))
+   mbTiles.delete_zoom(bbox_zoom_start-1)
    set_metadata(region)
 
 def make_sat_extension(region):
