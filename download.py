@@ -512,7 +512,7 @@ def view_tiles(stdscr):
       elif ch == ord('p'):
          replace_tile(src,state['zoom'],state['tileX'],state['tileY'])
       elif ch == ord('='):
-         if not state['zoom'] == 13:
+         if not state['zoom'] == 14:
             state['tileX'] *= 2
             state['tileY'] *= 2
             state['zoom'] += 1
