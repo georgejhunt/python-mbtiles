@@ -8,7 +8,8 @@ import sqlite3
 import sys, os
 #import argparse
 #import curses
-#import urllib3
+import urllib3
+import certifi
 #import tools
 import subprocess
 import json
@@ -25,7 +26,11 @@ mbTiles = object
 viewer_path = '/library/www/osm-vector-maps/viewer'
 input_dir_path = '/library/working/maps'
 base_file = 'osm.mbtiles'
+base_filename = 'osm-planet_z0-z10_2017.mbtiles'
 sat_file = 'satellite.mbtiles'
+internetarchive_url = 'http://10.10.123.13/internetarchive'
+region_path = '.'
+regions = {}
 
 class MBTiles():
    def __init__(self, filename):
@@ -137,6 +142,38 @@ class MBTiles():
    def Commit(self):
       self.conn.commit()
 
+class GetUrl(object):
+
+   def __init__(self):
+      self.http = urllib3.PoolManager(cert_reqs='CERT_REQUIRED',\
+           ca_certs=certifi.where())
+
+   def get_url_to_disk(self,srcurl,dest):
+      resp = (self.http.request("GET",srcurl,retries=10))
+      return(resp)
+
+def get_regions():
+   global regions
+   # error out if environment is missing
+
+   REGION_INFO = '%s/regions.json'%region_path
+   with open(REGION_INFO,'r') as region_fp:
+      try:
+         data = json.loads(region_fp.read())
+         regions = data['regions']
+      except:
+         print("regions.json parse error")
+         sys.exit(1)
+   
+def get_map_files(file_list):
+   global src # the opened url for satellite images
+   src = GetUrl()
+   try:
+      src = GetUrl(url,dest)
+   except:
+      print('failed to open source')
+      sys.exit(1)
+
 def sec2hms(n):
     days = n // (24 * 3600) 
   
@@ -163,15 +200,31 @@ def copy_if_new(src,dest):
          for row in rows:
             dest_db.SetTile(row['zoom_level'],row['tile_row'],\
                row['tile_column'],row['tile_data'])
-   
+  
+def get_src_list(selected):
+   get_regions()
+   file_list = [base_filename]
+   file_list.append(regions[selected]['url'])
+   file_list.append(regions[selected]['sat_url'])
+   return(file_list)
+
+ 
 def init_dest(dest_path):
    if not os.path.isfile(dest_path):
       subprocess.run('./create_empty_mbtiles.sh {}'.format(dest_path),shell=True)
 input_list = ['/library/working/maps/osm_z0-z5.mbtiles']
+
 def main():
    global mbTiles
    global start_time
    start_time = time.time()
+   if len(sys.argv) < 2:
+      print("You must specfy the name of the  Region to install")
+      sys.exit(1)
+   # Fetch the files required for this install
+   print('Fetching region: %s'%sys.argv[1])
+   files_to_get = get_src_list(sys.argv[1])
+   get_map_files(files_to_get)
 
    dest = viewer_path + '/' + base_file
    init_dest(dest)
