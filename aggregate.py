@@ -6,17 +6,26 @@
 
 import sqlite3
 import sys, os
-import argparse
-import curses
-import urllib3
+#import argparse
+#import curses
+#import urllib3
 #import tools
 import subprocess
 import json
-import math
+#import math
 import uuid
 import shutil
-from multiprocessing import Process, Lock
+#from multiprocessing import Process, Lock
 import time
+import hashlib
+import glob
+
+# GLOBALS
+mbTiles = object
+viewer_path = '/library/www/osm-vector-maps/viewer'
+input_dir_path = '/library/working/maps'
+base_file = 'osm.mbtiles'
+sat_file = 'satellite.mbtiles'
 
 class MBTiles():
    def __init__(self, filename):
@@ -24,7 +33,6 @@ class MBTiles():
       self.conn.row_factory = sqlite3.Row
       self.conn.text_factory = str
       self.c = self.conn.cursor()
-      self.schemaReady = False
 
    def __del__(self):
       self.conn.commit()
@@ -48,9 +56,6 @@ class MBTiles():
       return out
 
    def SetMetaData(self, name, value):
-      if not self.schemaReady:
-         self.CheckSchema()
-
       self.c.execute("UPDATE metadata SET value=? WHERE name=?", (value, name))
       if self.c.rowcount == 0:
          self.c.execute("INSERT INTO metadata (name, value) VALUES (?, ?);", (name, value))
@@ -58,18 +63,12 @@ class MBTiles():
       self.conn.commit()
 
    def DeleteMetaData(self, name):
-      if not self.schemaReady:
-         self.CheckSchema()
-
       self.c.execute("DELETE FROM metadata WHERE name = ?", (name,))
       self.conn.commit()
       if self.c.rowcount == 0:
          raise RuntimeError("Metadata name not found")
 
    def SetTile(self, zoomLevel, tileColumn, tileRow, data):
-      if not self.schemaReady:
-         self.CheckSchema()
-
       tile_id = self.TileExists(zoomLevel, tileColumn, tileRow)
       if tile_id: 
          tile_id = uuid.uuid4().hex
@@ -92,16 +91,13 @@ class MBTiles():
             raise RuntimeError("Insert image failure")
          operation = 'insert into map'
          self.c.execute("INSERT INTO map (zoom_level, tile_column, tile_row, tile_id) VALUES (?, ?, ?, ?);", 
-            (zoomLevel, tileColumn, tileRow, tile_idi))
+            (zoomLevel, tileColumn, tileRow, tile_id))
       if self.c.rowcount != 1:
          raise RuntimeError("Failure %s RowCount:%s"%(operation,self.c.rowcount))
       self.conn.commit()
    
 
    def DeleteTile(self, zoomLevel, tileColumn, tileRow):
-      if not self.schemaReady:
-         self.CheckSchema()
-
       tile_id = self.TileExists(zoomLevel, tileColumn, tileRow)
       if not tile_id:
          raise RuntimeError("Tile not found")
@@ -111,9 +107,6 @@ class MBTiles():
       self.conn.commit()
 
    def TileExists(self, zoomLevel, tileColumn, tileRow):
-      if not self.schemaReady:
-         self.CheckSchema()
-
       sql = 'select tile_id from map where zoom_level = ? and tile_column = ? and tile_row = ?'
       self.c.execute(sql,(zoomLevel, tileColumn, tileRow))
       row = self.c.fetchall()
@@ -144,10 +137,53 @@ class MBTiles():
    def Commit(self):
       self.conn.commit()
 
+def sec2hms(n):
+    days = n // (24 * 3600) 
+  
+    n = n % (24 * 3600) 
+    hours = n // 3600
+  
+    n %= 3600
+    minutes = n // 60
+  
+    n %= 60
+    seconds = n 
+    return '%s days, %s hours, %s minutes %2.1f seconds'%(days,hours,minutes,seconds)
+
+def copy_if_new(src,dest):
+   src_db = MBTiles(src)
+   dest_db = MBTiles(dest)
+   #for zoom in range(0,14):
+   for zoom in range(0,3):
+      sql = "SELECT * from tiles where zoom_level = ?"
+      src_db.c = src_db.c.execute(sql,(zoom,))
+      while True:
+         rows = src_db.c.fetchmany(100)
+         if not rows: break
+         for row in rows:
+            dest_db.SetTile(row['zoom_level'],row['tile_row'],\
+               row['tile_column'],row['tile_data'])
+   
+def init_dest(dest_path):
+   if not os.path.isfile(dest_path):
+      subprocess.run('./create_empty_mbtiles.sh {}'.format(dest_path),shell=True)
+input_list = ['/library/working/maps/osm_z0-z5.mbtiles']
 def main():
    global mbTiles
-   if not os.path.isdir('./work'):
-      os.mkdir('./work')
+   global start_time
+   start_time = time.time()
+
+   dest = viewer_path + '/' + base_file
+   init_dest(dest)
+   for infile in input_list:
+      copy_if_new(infile,dest)
+
+   # now see if satellite needs updating
+   dest = viewer_path + '/' + sat_file
+   init_dest(dest)
+   time.sleep(2)
+   elapsed = time.time() - start_time
+   print(sec2hms(elapsed))
    
 if __name__ == "__main__":
     # Run the main routine
