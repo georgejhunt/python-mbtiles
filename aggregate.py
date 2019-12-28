@@ -6,7 +6,7 @@
 
 import sqlite3
 import sys, os
-#import argparse
+import argparse
 #import curses
 import urllib3
 import certifi
@@ -22,6 +22,7 @@ import hashlib
 import glob
 
 # GLOBALS
+args = object
 mbTiles = object
 viewer_path = '/library/www/osm-vector-maps/viewer'
 input_dir_path = '/library/working/maps'
@@ -105,10 +106,15 @@ class MBTiles():
    def DeleteTile(self, zoomLevel, tileColumn, tileRow):
       tile_id = self.TileExists(zoomLevel, tileColumn, tileRow)
       if not tile_id:
-         raise RuntimeError("Tile not found")
-
-      self.c.execute("DELETE FROM images WHERE tile_id = ?;",tile_id) 
-      self.c.execute("DELETE FROM map WHERE tile_id = ?;",tile_id) 
+         return
+      try:
+         self.c.execute("DELETE FROM images WHERE tile_id = ?;",(tile_id,)) 
+      except:
+         pass
+      try:
+         self.c.execute("DELETE FROM map WHERE tile_id = ?;",(tile_id,)) 
+      except:
+         pass
       self.conn.commit()
 
    def TileExists(self, zoomLevel, tileColumn, tileRow):
@@ -152,6 +158,38 @@ class GetUrl(object):
       resp = (self.http.request("GET",srcurl,retries=10))
       return(resp)
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Assemble Resources for Maps.")
+    parser.add_argument("region", help="Looked up in regions.json")
+    parser.add_argument("-m", "--mbtiles", help="mbtiles filename.")
+    parser.add_argument('-r',"--remove", help="Tiles below this zoom from MBTILES", type=int)
+    return parser.parse_args()
+
+def chop_zoom_and_below(max_to_chop):
+   # chop a copied database
+   if not args.mbtiles:
+      print("Pliease specify sqlite database to chop with -m option")
+      sys.exit(1)
+   if not os.path.isfile(args.mbtiles):
+      print("Failed to open %s"%args.mbtiles)
+      sys.exit(1)
+   dbname = './work/%s'%os.path.basename(args.mbtiles)
+   shutil.copy(args.mbtiles,dbname)
+   # open the database  
+   db = MBTiles(dbname)
+   sql = 'select * from map where zoom_level < ?'
+   db.c.execute(sql,(max_to_chop,))
+   rows = db.c.fetchall()
+   for row in rows:
+      try:
+         db.DeleteTile(row['zoom_level'],row['tile_column'],row['tile_row'])
+      except Exception as e:
+         print('DeleteTile in chop_xoom error:%s'%e)
+         sys.exit(1)
+   print('vacumming database')
+   db.c.execute('vacuum')
+   db.Commit()
+   
 def get_regions():
    global regions
    # error out if environment is missing
@@ -198,8 +236,8 @@ def copy_if_new(src,dest):
          rows = src_db.c.fetchmany(100)
          if not rows: break
          for row in rows:
-            dest_db.SetTile(row['zoom_level'],row['tile_row'],\
-               row['tile_column'],row['tile_data'])
+            dest_db.SetTile(row['zoom_level'],row['tile_column'],\
+               row['tile_row'],row['tile_data'])
   
 def get_src_list(selected):
    get_regions()
@@ -215,11 +253,16 @@ def init_dest(dest_path):
 input_list = ['/library/working/maps/osm_z0-z5.mbtiles']
 
 def main():
+   global args
    global mbTiles
    global start_time
    start_time = time.time()
-   if len(sys.argv) < 2:
-      print("You must specfy the name of the  Region to install")
+   if not os.path.isdir('./work'):
+      os.mkdir('./work')
+   args = parse_args()
+   if args.remove:
+      print("removing below %s"%args.remove)
+      chop_zoom_and_below(args.remove)
       sys.exit(1)
    # Fetch the files required for this install
    print('Fetching region: %s'%sys.argv[1])
